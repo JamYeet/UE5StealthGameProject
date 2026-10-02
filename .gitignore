@@ -1,0 +1,30 @@
+# Unreal generated folders
+AGP/Binaries/
+AGP/Intermediate/
+AGP/Saved/
+AGP/DerivedDataCache/
+AGP/Build/
+AGP/Plugins/*/Binaries/
+AGP/Plugins/*/Intermediate/
+
+# Per-user content
+AGP/Content/Developers/
+AGP/Content/Collections/
+
+# IDE files (regenerated from the .uproject)
+.vs/
+.idea/
+.vscode/
+AGP/.vs/
+AGP/.idea/
+*.sln
+*.suo
+*.sdf
+*.VC.db
+*.opensdf
+*.DotSettings.user
+*.code-workspace
+
+# OS files
+Thumbs.db
+.DS_Store
