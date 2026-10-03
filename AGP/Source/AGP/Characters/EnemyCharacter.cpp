@@ -10,6 +10,8 @@
 #include "Perception/AIPerceptionTypes.h"
 #include "Perception/AISenseConfig_Sight.h"
 #include "DrawDebugHelpers.h"
+#include "AGP/Components/DetectionComponent.h"
+#include "GameFramework/CharacterMovementComponent.h"
 
 // Sets default values
 AEnemyCharacter::AEnemyCharacter()
@@ -18,6 +20,7 @@ AEnemyCharacter::AEnemyCharacter()
 	PrimaryActorTick.bCanEverTick = true;
 	
 	AIPerceptionComponent = CreateDefaultSubobject<UAIPerceptionComponent>(TEXT("AI Perception Component"));
+	DetectionComponent = CreateDefaultSubobject<UDetectionComponent>(TEXT("Detection Component"));
 	
 	SightConfig = CreateDefaultSubobject<UAISenseConfig_Sight>(TEXT("Sight Config"));
 	if (SightConfig)
@@ -48,6 +51,11 @@ void AEnemyCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	
+	if (bDebugStandStill)
+	{
+		GetCharacterMovement()->MaxWalkSpeed = 0.0f;
+	}
+	
 	PathfindingSubsystem = GetWorld()->GetSubsystem<UPathfindingSubsystem>();
 	if (PathfindingSubsystem)
 	{
@@ -63,11 +71,19 @@ void AEnemyCharacter::BeginPlay()
 
 void AEnemyCharacter::TickPatrol()
 {
-	// TEMPORARY: until the detection meter exists (step 2), seeing the player means Alerted.
-	if (SensedPlayer)
+	if (DetectionComponent)
 	{
-		SetState(EEnemyState::Alerted);
-		return;
+		// Full is checked first, so a player at point blank skips Suspicious.
+		if (DetectionComponent->IsMeterFull())
+		{
+			SetState(EEnemyState::Alerted);
+			return;
+		}
+		if (DetectionComponent->IsAboveSuspiciousThreshold())
+		{
+			SetState(EEnemyState::Suspicious);
+			return;
+		}
 	}
 	
 	if (CurrentPath.IsEmpty())
@@ -80,45 +96,88 @@ void AEnemyCharacter::TickPatrol()
 	MoveAlongPath();
 }
 
-void AEnemyCharacter::TickSuspicious()
+void AEnemyCharacter::TickSuspicious(float DeltaTime)
 {
-	// Placeholder. Reached from the detection meter in step 2, behaviour in step 4.
-}
-
-void AEnemyCharacter::TickAlerted()
-{
-	// TEMPORARY: losing sight of the player means Search.
-	if (!SensedPlayer)
+	if (!DetectionComponent) return;
+	
+	if (DetectionComponent->IsMeterFull())
+	{
+		SetState(EEnemyState::Alerted);
+		return;
+	}
+	
+	// Still looking at the player resets the timer. Only time spent without sight counts.
+	if (bPlayerVisible)
+	{
+		SuspiciousTimer = 0.0f;
+	}
+	else
+	{
+		SuspiciousTimer += DeltaTime;
+	}
+	
+	// "Did I see that?" - no sight for long enough, so go and check the last known position.
+	if (SuspiciousTimer >= SuspiciousDuration)
 	{
 		SetState(EEnemyState::Search);
 		return;
 	}
 	
-	if (CurrentPath.IsEmpty())
+	// Placeholder: the guard stands still. Looking toward the sighting is step 4.
+}
+
+void AEnemyCharacter::TickAlerted(float DeltaTime)
+{
+	// Count how long the player has been out of sight. Seeing them again resets it.
+	if (bPlayerVisible)
 	{
-		if (PathfindingSubsystem)
-		{
-			CurrentPath = PathfindingSubsystem->GetPath(GetActorLocation(), TargetLocation);
-		}
-	}
-	MoveAlongPath();
-	
-	if (OutOfAmmo())
-	{
-		Reload();
+		LostSightTimer = 0.0f;
 	}
 	else
 	{
-		Fire(SensedPlayer->GetActorLocation());
+		LostSightTimer += DeltaTime;
+	}
+	
+	if (LostSightTimer >= LoseTargetDuration)
+	{
+		SetState(EEnemyState::Search);
+		return;
+	}
+	
+	// Chase the last known position. Repath when the current path runs out.
+	if (CurrentPath.IsEmpty() && PathfindingSubsystem && DetectionComponent
+		&& DetectionComponent->HasLastKnownLocation())
+	{
+		CurrentPath = PathfindingSubsystem->GetPath(GetActorLocation(), DetectionComponent->GetLastKnownLocation());
+	}
+	MoveAlongPath();
+	
+	// Only shoot while the player is actually in sight.
+	if (bPlayerVisible && SensedPlayer)
+	{
+		if (OutOfAmmo())
+		{
+			Reload();
+		}
+		else
+		{
+			Fire(SensedPlayer->GetActorLocation());
+		}
 	}
 }
 
 void AEnemyCharacter::TickSearch(float DeltaTime)
 {
-	// Seeing the player again puts the guard straight back to Alerted.
-	if (SensedPlayer)
+	if (DetectionComponent && DetectionComponent->IsMeterFull())
 	{
 		SetState(EEnemyState::Alerted);
+		return;
+	}
+	
+	// Seeing the player again: stop and look (Suspicious), then re-search if they are lost.
+	if (bPlayerVisible)
+	{
+		SetState(EEnemyState::Suspicious);
 		return;
 	}
 	
@@ -126,8 +185,19 @@ void AEnemyCharacter::TickSearch(float DeltaTime)
 	SearchTimer -= DeltaTime;
 	if (SearchTimer <= 0.0f)
 	{
-		SetState(EEnemyState::Patrol);
+		EndSearch();
 	}
+}
+
+void AEnemyCharacter::EndSearch()
+{
+	// Lower the floor first, otherwise it would pull the reset meter straight back up.
+	if (DetectionComponent)
+	{
+		DetectionComponent->SetMeterFloor(0.0f);
+		DetectionComponent->ResetMeter();
+	}
+	SetState(EEnemyState::Patrol);
 }
 
 void AEnemyCharacter::TickDeath()
@@ -153,15 +223,15 @@ void AEnemyCharacter::MoveAlongPath()
 
 void AEnemyCharacter::OnSensedActor(AActor* Actor, FAIStimulus Stimulus)
 {
-	if (SensedPlayer) return;
-	
-	if (APlayerCharacter* Player =  Cast<APlayerCharacter>(Actor))
+	if (APlayerCharacter* Player = Cast<APlayerCharacter>(Actor))
 	{
-		if (Stimulus.WasSuccessfullySensed())
+		// This event fires when sight is gained and when it is lost.
+		bPlayerVisible = Stimulus.WasSuccessfullySensed();
+		
+		if (bPlayerVisible)
 		{
 			SensedPlayer = Player;
 			UE_LOG(LogTemp, Display, TEXT("Sensed Player"))
-			
 		}
 	}
 }
@@ -176,6 +246,7 @@ void AEnemyCharacter::OnForgetActor(AActor* Actor)
 		{
 			UE_LOG(LogTemp, Display, TEXT("Lost Player"))
 			SensedPlayer = nullptr;
+			bPlayerVisible = false;
 		}
 	}
 }
@@ -226,7 +297,8 @@ void AEnemyCharacter::DrawDebugInfo() const
 #if ENABLE_DRAW_DEBUG
 	if (!bDrawDebug) return;
 
-	const FString StateText = UEnum::GetDisplayValueAsText(CurrentState).ToString();
+	const float Meter = DetectionComponent ? DetectionComponent->GetMeter() : 0.0f;
+	const FString StateText = FString::Printf(TEXT("%s  %.2f"), *UEnum::GetDisplayValueAsText(CurrentState).ToString(), Meter);
 
 	// Passing 'this' makes the offset relative to the guard, so the text follows it.
 	// Duration 0 draws for one frame, since this is redrawn every tick.
@@ -255,15 +327,24 @@ void AEnemyCharacter::EnterState(EEnemyState NewState)
 	switch (NewState)
 	{
 	case EEnemyState::Patrol:
+		if (DetectionComponent) DetectionComponent->SetMeterFloor(0.0f);
 		break;
 		
 	case EEnemyState::Suspicious:
+		// The meter holds at the threshold while the guard works out what it saw.
+		if (DetectionComponent) DetectionComponent->SetMeterFloor(DetectionComponent->GetSuspiciousThreshold());
+		SuspiciousTimer = 0.0f;
 		break;
 		
 	case EEnemyState::Alerted:
+		// A floor of 1.0 holds the meter full for as long as the guard is Alerted.
+		if (DetectionComponent) DetectionComponent->SetMeterFloor(1.0f);
+		LostSightTimer = 0.0f;
 		break;
 		
 	case EEnemyState::Search:
+		// The meter decays from full down to the suspicious threshold and holds there.
+		if (DetectionComponent) DetectionComponent->SetMeterFloor(DetectionComponent->GetSuspiciousThreshold());
 		SearchTimer = SearchDuration;
 		break;
 		
@@ -286,6 +367,17 @@ void AEnemyCharacter::ExitState(EEnemyState OldState)
 	}
 }
 
+void AEnemyCharacter::UpdateDetection(float DeltaTime)
+{
+	if (!DetectionComponent) return;
+	
+	const bool bCanSee = bPlayerVisible && SensedPlayer;
+	const FVector PlayerLocation = bCanSee ? SensedPlayer->GetActorLocation() : FVector::ZeroVector;
+	const float Distance = bCanSee ? FVector::Dist(GetActorLocation(), PlayerLocation) : 0.0f;
+	
+	DetectionComponent->UpdateDetection(DeltaTime, bCanSee, PlayerLocation, Distance);
+}
+
 // Called every frame
 void AEnemyCharacter::Tick(float DeltaTime)
 {
@@ -294,6 +386,8 @@ void AEnemyCharacter::Tick(float DeltaTime)
 	UpdateTargetLocation();
 	DrawSightCone();
 	DrawDebugInfo();
+	UpdateDetection(DeltaTime);
+	
 		
 	if (HealthComponent && HealthComponent->IsDead())
 	{
@@ -307,11 +401,11 @@ void AEnemyCharacter::Tick(float DeltaTime)
 		break;
 		
 	case EEnemyState::Suspicious:
-		TickSuspicious();
+		TickSuspicious(DeltaTime);
 		break;
 		
 	case EEnemyState::Alerted:
-		TickAlerted();
+		TickAlerted(DeltaTime);
 		break;
 		
 	case EEnemyState::Search:

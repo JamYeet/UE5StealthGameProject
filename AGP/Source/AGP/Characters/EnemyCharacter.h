@@ -10,6 +10,7 @@ struct FAIStimulus;
 class UAIPerceptionComponent;
 class APlayerCharacter;
 class UAISenseConfig_Sight;
+class UDetectionComponent;
 
 UENUM(BlueprintType)
 enum class EEnemyState:uint8 
@@ -61,17 +62,38 @@ protected:
 	UPROPERTY(VisibleAnywhere, Category = "AI | Perception")
 	UAISenseConfig_Sight* SightConfig;
 	
+	UPROPERTY(VisibleAnywhere, Category = "AI | Detection")
+	UDetectionComponent* DetectionComponent;
+	
+	// True while the perception system reports the player as currently in sight
+	bool bPlayerVisible = false;
+	
 	UPROPERTY(EditAnywhere, Category = "AI | Debug")
 	bool bDrawDebug = true;
+	
+	UPROPERTY(EditAnywhere, Category = "AI | Debug")
+	bool bDebugStandStill = true;
 	
 
 	void DrawSightCone() const;
 	void DrawDebugInfo() const;
 	
 	UPROPERTY(EditDefaultsOnly, Category = "AI | Search")
-	float SearchDuration = 5.0f;
+	float SearchDuration = 12.0f;
 	
-	/** Seconds left in the current search. */
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Suspicious")
+	float SuspiciousDuration = 3.0f;
+	
+	//
+	float SuspiciousTimer = 0.0f;
+	
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Alerted")
+	float LoseTargetDuration = 5.0f;
+	
+	// Seconds the player has been out of sight while Alerted. 
+	float LostSightTimer = 0.0f;
+	
+	// Seconds left in the current search. 
 	float SearchTimer = 0.0f;
 	
 	
@@ -79,10 +101,12 @@ protected:
 	void SetState(EEnemyState NewState);
 	void EnterState(EEnemyState NewState);
 	void ExitState(EEnemyState OldState);
+	void EndSearch();
+	
 	
 	void TickPatrol();
-	void TickSuspicious();
-	void TickAlerted();
+	void TickSuspicious(float DeltaTime);
+	void TickAlerted(float DeltaTime);
 	void TickSearch(float DeltaTime);
 	void TickDeath();
 	
@@ -95,6 +119,9 @@ protected:
 	void OnForgetActor(AActor* Actor);
 	
 	void UpdateTargetLocation();
+	
+	// Feeds the detection meter with what this guard can currently see.
+	void UpdateDetection(float DeltaTime);
 	
 	bool OutOfAmmo();
 
