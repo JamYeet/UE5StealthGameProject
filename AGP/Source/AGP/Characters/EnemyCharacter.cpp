@@ -38,7 +38,6 @@ AEnemyCharacter::AEnemyCharacter()
 	
 	SensedPlayer = nullptr;
 	PathingLocationThreshold = 150.0f;
-	EvadeHealthPercentageThreshold = 0.4f;
 	TeamID = FGenericTeamId(2);
 	
 	
@@ -64,6 +63,13 @@ void AEnemyCharacter::BeginPlay()
 
 void AEnemyCharacter::TickPatrol()
 {
+	// TEMPORARY: until the detection meter exists (step 2), seeing the player means Alerted.
+	if (SensedPlayer)
+	{
+		SetState(EEnemyState::Alerted);
+		return;
+	}
+	
 	if (CurrentPath.IsEmpty())
 	{
 		if (PathfindingSubsystem)
@@ -74,42 +80,59 @@ void AEnemyCharacter::TickPatrol()
 	MoveAlongPath();
 }
 
-void AEnemyCharacter::TickEngage()
+void AEnemyCharacter::TickSuspicious()
 {
+	// Placeholder. Reached from the detection meter in step 2, behaviour in step 4.
+}
+
+void AEnemyCharacter::TickAlerted()
+{
+	// TEMPORARY: losing sight of the player means Search.
+	if (!SensedPlayer)
+	{
+		SetState(EEnemyState::Search);
+		return;
+	}
+	
 	if (CurrentPath.IsEmpty())
 	{
-		if (PathfindingSubsystem && SensedPlayer)
+		if (PathfindingSubsystem)
 		{
-			// CurrentPath = PathfindingSubsystem->GetPath(GetActorLocation(),SensedCharacter->GetActorLocation());
-			CurrentPath = PathfindingSubsystem->GetPath(GetActorLocation(),TargetLocation);
+			CurrentPath = PathfindingSubsystem->GetPath(GetActorLocation(), TargetLocation);
 		}
 	}
 	MoveAlongPath();
 	
-	if (SensedPlayer)
+	if (OutOfAmmo())
 	{
-		if (OutOfAmmo())
-		{
-			Reload();
-		}
-		else
-		{
-			Fire(SensedPlayer->GetActorLocation());
-		}
-		
+		Reload();
+	}
+	else
+	{
+		Fire(SensedPlayer->GetActorLocation());
 	}
 }
 
-void AEnemyCharacter::TickEvade()
+void AEnemyCharacter::TickSearch(float DeltaTime)
 {
-	if (CurrentPath.IsEmpty())
+	// Seeing the player again puts the guard straight back to Alerted.
+	if (SensedPlayer)
 	{
-		if (PathfindingSubsystem && SensedPlayer)
-		{
-			CurrentPath = PathfindingSubsystem->GetPathAway(GetActorLocation(),TargetLocation);
-		}
+		SetState(EEnemyState::Alerted);
+		return;
 	}
-	MoveAlongPath();
+	
+	// Placeholder: the guard stands still until the timer runs out. Real searching is step 4.
+	SearchTimer -= DeltaTime;
+	if (SearchTimer <= 0.0f)
+	{
+		SetState(EEnemyState::Patrol);
+	}
+}
+
+void AEnemyCharacter::TickDeath()
+{
+	// Placeholder. Stopping movement and disabling collision is step 4.
 }
 
 void AEnemyCharacter::MoveAlongPath()
@@ -211,6 +234,58 @@ void AEnemyCharacter::DrawDebugInfo() const
 #endif
 }
 
+void AEnemyCharacter::SetState(EEnemyState NewState)
+{
+	if (NewState == CurrentState) return;
+	
+	ExitState(CurrentState);
+	
+	UE_LOG(LogTemp, Display, TEXT("%s: %s -> %s"), *GetName(),
+		*UEnum::GetValueAsString(CurrentState), *UEnum::GetValueAsString(NewState));
+	
+	CurrentState = NewState;
+	EnterState(NewState);
+}
+
+void AEnemyCharacter::EnterState(EEnemyState NewState)
+{
+	// A path made for the previous state is never valid for the new one.
+	CurrentPath.Empty();
+	
+	switch (NewState)
+	{
+	case EEnemyState::Patrol:
+		break;
+		
+	case EEnemyState::Suspicious:
+		break;
+		
+	case EEnemyState::Alerted:
+		break;
+		
+	case EEnemyState::Search:
+		SearchTimer = SearchDuration;
+		break;
+		
+	case EEnemyState::Death:
+		break;
+	}
+}
+
+void AEnemyCharacter::ExitState(EEnemyState OldState)
+{
+	// Nothing to clean up yet. Step 3 (speeds) and step 4 (behaviours) will use this.
+	switch (OldState)
+	{
+	case EEnemyState::Patrol:
+	case EEnemyState::Suspicious:
+	case EEnemyState::Alerted:
+	case EEnemyState::Search:
+	case EEnemyState::Death:
+		break;
+	}
+}
+
 // Called every frame
 void AEnemyCharacter::Tick(float DeltaTime)
 {
@@ -220,58 +295,31 @@ void AEnemyCharacter::Tick(float DeltaTime)
 	DrawSightCone();
 	DrawDebugInfo();
 		
+	if (HealthComponent && HealthComponent->IsDead())
+	{
+		SetState(EEnemyState::Death);
+	}
+	
 	switch (CurrentState)
 	{
 	case EEnemyState::Patrol:
-		if (SensedPlayer)
-		{
-			if (HealthComponent->GetCurrentHealthPercentage()>=EvadeHealthPercentageThreshold)
-			{
-				CurrentPath.Empty();
-				CurrentState = EEnemyState::Engage;
-				TickEngage();
-				break;
-			}
-			CurrentPath.Empty();
-			CurrentState = EEnemyState::Evade;
-			TickEvade();
-			break;
-		}
 		TickPatrol();
 		break;
 		
-	case EEnemyState::Engage:
-		if (!SensedPlayer)
-		{
-			CurrentState = EEnemyState::Patrol;
-			TickPatrol();
-			break;
-		}
-		if (HealthComponent->GetCurrentHealthPercentage()<EvadeHealthPercentageThreshold)
-		{
-			CurrentPath.Empty();
-			CurrentState = EEnemyState::Evade;
-			TickEvade();
-			break;
-		}
-		TickEngage();
+	case EEnemyState::Suspicious:
+		TickSuspicious();
 		break;
 		
-	case EEnemyState::Evade:
-		if (!SensedPlayer)
-		{
-			CurrentState = EEnemyState::Patrol;
-			TickPatrol();
-			break;
-		}
-		if (HealthComponent->GetCurrentHealthPercentage()>=EvadeHealthPercentageThreshold)
-		{
-			CurrentPath.Empty();
-			CurrentState = EEnemyState::Engage;
-			TickEngage();
-			break;
-		}
-		TickEvade();
+	case EEnemyState::Alerted:
+		TickAlerted();
+		break;
+		
+	case EEnemyState::Search:
+		TickSearch(DeltaTime);
+		break;
+		
+	case EEnemyState::Death:
+		TickDeath();
 		break;
 	}
 }

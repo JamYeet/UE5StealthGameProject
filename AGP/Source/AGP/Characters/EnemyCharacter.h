@@ -15,8 +15,10 @@ UENUM(BlueprintType)
 enum class EEnemyState:uint8 
 {
 	Patrol,
-	Engage,
-	Evade
+	Suspicious,
+	Alerted,
+	Search,
+	Death
 };
 
 
@@ -44,7 +46,7 @@ protected:
 	UPROPERTY(EditDefaultsOnly)
 	float PathingLocationThreshold;
 	
-	UPROPERTY(EditAnywhere)
+	UPROPERTY(VisibleInstanceOnly)
 	EEnemyState CurrentState = EEnemyState::Patrol;
 	
 	UPROPERTY(VisibleAnywhere)
@@ -56,22 +58,34 @@ protected:
 	UPROPERTY(VisibleInstanceOnly)
 	FVector TargetLocation;
 	
-	UPROPERTY(EditDefaultsOnly)
-	float EvadeHealthPercentageThreshold;
-	
 	UPROPERTY(VisibleAnywhere, Category = "AI | Perception")
 	UAISenseConfig_Sight* SightConfig;
 	
 	UPROPERTY(EditAnywhere, Category = "AI | Debug")
 	bool bDrawDebug = true;
+	
 
 	void DrawSightCone() const;
 	void DrawDebugInfo() const;
 	
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Search")
+	float SearchDuration = 5.0f;
+	
+	/** Seconds left in the current search. */
+	float SearchTimer = 0.0f;
+	
+	
+	
+	void SetState(EEnemyState NewState);
+	void EnterState(EEnemyState NewState);
+	void ExitState(EEnemyState OldState);
 	
 	void TickPatrol();
-	void TickEngage();
-	void TickEvade();
+	void TickSuspicious();
+	void TickAlerted();
+	void TickSearch(float DeltaTime);
+	void TickDeath();
+	
 	void MoveAlongPath();
 	
 	UFUNCTION()
