@@ -19,7 +19,7 @@ struct FAStarNodeData
 
 void UPathfindingSubsystem::OnWorldBeginPlay(UWorld& World)
 {
-	Super::OnWorldBeginPlay(World);
+	Super::OnWorldBeginPlay(World);	
 	
 	PopulateNodes();
 }

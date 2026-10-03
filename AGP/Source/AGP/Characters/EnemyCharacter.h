@@ -9,6 +9,7 @@
 struct FAIStimulus;
 class UAIPerceptionComponent;
 class APlayerCharacter;
+class UAISenseConfig_Sight;
 
 UENUM(BlueprintType)
 enum class EEnemyState:uint8 
@@ -57,6 +58,16 @@ protected:
 	
 	UPROPERTY(EditDefaultsOnly)
 	float EvadeHealthPercentageThreshold;
+	
+	UPROPERTY(VisibleAnywhere, Category = "AI | Perception")
+	UAISenseConfig_Sight* SightConfig;
+	
+	UPROPERTY(EditAnywhere, Category = "AI | Debug")
+	bool bDrawDebug = true;
+
+	void DrawSightCone() const;
+	void DrawDebugInfo() const;
+	
 	
 	void TickPatrol();
 	void TickEngage();
