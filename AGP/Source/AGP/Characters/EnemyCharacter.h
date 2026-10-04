@@ -56,8 +56,6 @@ protected:
 	UPROPERTY(VisibleInstanceOnly)
 	APlayerCharacter* SensedPlayer;
 	
-	UPROPERTY(VisibleInstanceOnly)
-	FVector TargetLocation;
 	
 	UPROPERTY(VisibleAnywhere, Category = "AI | Perception")
 	UAISenseConfig_Sight* SightConfig;
@@ -71,10 +69,6 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "AI | Debug")
 	bool bDrawDebug = true;
 	
-	UPROPERTY(EditAnywhere, Category = "AI | Debug")
-	bool bDebugStandStill = true;
-	
-
 	void DrawSightCone() const;
 	void DrawDebugInfo() const;
 	
@@ -84,7 +78,7 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "AI | Suspicious")
 	float SuspiciousDuration = 3.0f;
 	
-	//
+	// Seconds the player has been out of sight while Suspicious.
 	float SuspiciousTimer = 0.0f;
 	
 	UPROPERTY(EditDefaultsOnly, Category = "AI | Alerted")
@@ -96,29 +90,45 @@ protected:
 	// Seconds left in the current search. 
 	float SearchTimer = 0.0f;
 	
+	// Walk speeds per state in cm/s. Suspicious and Death stand still.
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Movement")
+	float PatrolSpeed = 150.0f;
+	
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Movement")
+	float SuspiciousSpeed = 0.0f;
+	
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Movement")
+	float SearchSpeed = 275.0f;
+	
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Movement")
+	float AlertedSpeed = 500.0f;
+	
+	// How fast the guard turns, in degrees per second.
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Movement")
+	float TurnSpeed = 180.0f;
 	
 	
 	void SetState(EEnemyState NewState);
 	void EnterState(EEnemyState NewState);
 	void ExitState(EEnemyState OldState);
+	void ApplyStateSpeed(EEnemyState State);
+	void FaceLocation(const FVector& Location, float DeltaTime);
 	void EndSearch();
 	
 	
-	void TickPatrol();
+	void TickPatrol(float DeltaTime);
 	void TickSuspicious(float DeltaTime);
 	void TickAlerted(float DeltaTime);
 	void TickSearch(float DeltaTime);
 	void TickDeath();
 	
-	void MoveAlongPath();
+	void MoveAlongPath(float DeltaTime, bool bFaceMovement = true);
 	
 	UFUNCTION()
 	void OnSensedActor(AActor* Actor, FAIStimulus Stimulus);
 	
 	UFUNCTION()
 	void OnForgetActor(AActor* Actor);
-	
-	void UpdateTargetLocation();
 	
 	// Feeds the detection meter with what this guard can currently see.
 	void UpdateDetection(float DeltaTime);

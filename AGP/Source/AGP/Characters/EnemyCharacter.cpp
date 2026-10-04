@@ -51,10 +51,14 @@ void AEnemyCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	
-	if (bDebugStandStill)
+	bUseControllerRotationYaw = false;
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
 	{
-		GetCharacterMovement()->MaxWalkSpeed = 0.0f;
+		Movement->bOrientRotationToMovement = false;
+		Movement->bUseControllerDesiredRotation = false;
 	}
+	
+	ApplyStateSpeed(CurrentState);
 	
 	PathfindingSubsystem = GetWorld()->GetSubsystem<UPathfindingSubsystem>();
 	if (PathfindingSubsystem)
@@ -69,15 +73,15 @@ void AEnemyCharacter::BeginPlay()
 	}
 }
 
-void AEnemyCharacter::TickPatrol()
+void AEnemyCharacter::TickPatrol(float DeltaTime)
 {
 	if (DetectionComponent)
 	{
-		// Full is checked first, so a player at point blank skips Suspicious.
+		// Full is checked first, so a player at point-blank skips Suspicious.
 		if (DetectionComponent->IsMeterFull())
 		{
 			SetState(EEnemyState::Alerted);
-			return;
+				return;
 		}
 		if (DetectionComponent->IsAboveSuspiciousThreshold())
 		{
@@ -93,7 +97,7 @@ void AEnemyCharacter::TickPatrol()
 			CurrentPath = PathfindingSubsystem->GetRandomPath(GetActorLocation());
 		}
 	}
-	MoveAlongPath();
+	MoveAlongPath(DeltaTime);
 }
 
 void AEnemyCharacter::TickSuspicious(float DeltaTime)
@@ -123,7 +127,14 @@ void AEnemyCharacter::TickSuspicious(float DeltaTime)
 		return;
 	}
 	
-	// Placeholder: the guard stands still. Looking toward the sighting is step 4.
+	if (bPlayerVisible && SensedPlayer)
+	{
+		FaceLocation(SensedPlayer->GetActorLocation(), DeltaTime);
+	}
+	else if (DetectionComponent->HasLastKnownLocation())
+	{
+		FaceLocation(DetectionComponent->GetLastKnownLocation(), DeltaTime);
+	}
 }
 
 void AEnemyCharacter::TickAlerted(float DeltaTime)
@@ -150,7 +161,17 @@ void AEnemyCharacter::TickAlerted(float DeltaTime)
 	{
 		CurrentPath = PathfindingSubsystem->GetPath(GetActorLocation(), DetectionComponent->GetLastKnownLocation());
 	}
-	MoveAlongPath();
+	
+	const bool bCanSeePlayer = bPlayerVisible && SensedPlayer;
+	MoveAlongPath(DeltaTime, false);
+	if (bCanSeePlayer)
+	{
+		FaceLocation(SensedPlayer->GetActorLocation(), DeltaTime);
+	}
+	else if (DetectionComponent && DetectionComponent->HasLastKnownLocation())
+	{
+		FaceLocation(DetectionComponent->GetLastKnownLocation(), DeltaTime);
+	}
 	
 	// Only shoot while the player is actually in sight.
 	if (bPlayerVisible && SensedPlayer)
@@ -205,7 +226,7 @@ void AEnemyCharacter::TickDeath()
 	// Placeholder. Stopping movement and disabling collision is step 4.
 }
 
-void AEnemyCharacter::MoveAlongPath()
+void AEnemyCharacter::MoveAlongPath(float DeltaTime, bool bFaceMovement)
 {
 	if (CurrentPath.IsEmpty()) return;
 	
@@ -214,11 +235,15 @@ void AEnemyCharacter::MoveAlongPath()
 	Direction.Normalize();
 	AddMovementInput(Direction,1);
 	
+	if (bFaceMovement)
+	{
+		FaceLocation(NextLocation, DeltaTime);
+	}
+	
 	if (FVector::DistSquared(NextLocation,GetActorLocation()) <= PathingLocationThreshold*PathingLocationThreshold)
 	{
 		CurrentPath.RemoveAt(0);
 	}
-	
 }
 
 void AEnemyCharacter::OnSensedActor(AActor* Actor, FAIStimulus Stimulus)
@@ -251,22 +276,6 @@ void AEnemyCharacter::OnForgetActor(AActor* Actor)
 	}
 }
 
-void AEnemyCharacter::UpdateTargetLocation()
-{
-	if (!SensedPlayer) return;
-	
-	if (!AIPerceptionComponent) return;
-	
-	// Cache the last known player location!
-	const FActorPerceptionInfo* Info = AIPerceptionComponent->GetActorInfo(*SensedPlayer);
-	if (!Info) return;
-	TargetLocation = Info->GetLastStimulusLocation();
-	
-	// Visualize the agent's target location!
-	DrawDebugSphere(GetWorld(),TargetLocation, 50.0f, 4, FColor::Green, false, -1, 0, 1);
-	
-}
-
 bool AEnemyCharacter::OutOfAmmo()
 {
 	if (!HasWeapon()) return false;
@@ -284,9 +293,16 @@ void AEnemyCharacter::DrawSightCone() const
 	FRotator EyeRotation;
 	GetActorEyesViewPoint(EyeLocation, EyeRotation);
 
-	// DrawDebugCone takes the half-angle in radians. Red when the player is sensed
+	// DrawDebugCone takes the half-angle in radians. The colour follows the detection meter.
 	const float HalfAngleRadians = FMath::DegreesToRadians(SightConfig->PeripheralVisionAngleDegrees);
-	const FColor ConeColor = SensedPlayer ? FColor::Red : FColor::Green;
+	const float Meter = DetectionComponent ? DetectionComponent->GetMeter() : 0.0f;
+	const float Threshold = DetectionComponent ? DetectionComponent->GetSuspiciousThreshold() : 0.25f;
+	
+	FLinearColor ConeLinear = FMath::Lerp(FLinearColor::Green, FLinearColor::Yellow,
+		FMath::Clamp(Meter / Threshold, 0.0f, 1.0f));
+	ConeLinear = FMath::Lerp(ConeLinear, FLinearColor::Red,
+		FMath::GetMappedRangeValueClamped(FVector2D(Threshold, 1.0f), FVector2D(0.0f, 1.0f), Meter));
+	const FColor ConeColor = ConeLinear.ToFColor(true);
 
 	DrawDebugCone(GetWorld(), EyeLocation, EyeRotation.Vector(), SightConfig->SightRadius, HalfAngleRadians, HalfAngleRadians, 12, ConeColor, false, -1.0f, 0, 2.0f);
 #endif
@@ -303,7 +319,56 @@ void AEnemyCharacter::DrawDebugInfo() const
 	// Passing 'this' makes the offset relative to the guard, so the text follows it.
 	// Duration 0 draws for one frame, since this is redrawn every tick.
 	DrawDebugString(GetWorld(), FVector(0.0f, 0.0f, 120.0f), StateText, const_cast<AEnemyCharacter*>(this), FColor::White, 0.0f, true);
+
+	if (DetectionComponent && DetectionComponent->HasLastKnownLocation())
+	{
+		DrawDebugSphere(GetWorld(), DetectionComponent->GetLastKnownLocation(), 50.0f, 8, FColor::Cyan, false, -1.0f, 0, 1.0f);
+	}
 #endif
+}
+
+void AEnemyCharacter::ApplyStateSpeed(EEnemyState State)
+{
+	float Speed = 0.0f;
+	
+	switch (State)
+	{
+	case EEnemyState::Patrol:
+		Speed = PatrolSpeed;
+		break;
+		
+	case EEnemyState::Suspicious:
+		Speed = SuspiciousSpeed;
+		break;
+		
+	case EEnemyState::Alerted:
+		Speed = AlertedSpeed;
+		break;
+		
+	case EEnemyState::Search:
+		Speed = SearchSpeed;
+		break;
+		
+	case EEnemyState::Death:
+		break;
+	}
+	
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->MaxWalkSpeed = Speed;
+	}
+}
+
+void AEnemyCharacter::FaceLocation(const FVector& Location, float DeltaTime)
+{
+	FVector ToTarget = Location - GetActorLocation();
+	ToTarget.Z = 0.0f; 
+	
+	if (ToTarget.IsNearlyZero()) return;
+	
+	// FixedTurn moves the yaw toward the target by at most this frame's turn, handling the 360 wrap.
+	const float NewYaw = FMath::FixedTurn(GetActorRotation().Yaw, ToTarget.Rotation().Yaw, TurnSpeed * DeltaTime);
+	SetActorRotation(FRotator(0.0f, NewYaw, 0.0f));
 }
 
 void AEnemyCharacter::SetState(EEnemyState NewState)
@@ -323,6 +388,7 @@ void AEnemyCharacter::EnterState(EEnemyState NewState)
 {
 	// A path made for the previous state is never valid for the new one.
 	CurrentPath.Empty();
+	ApplyStateSpeed(NewState);
 	
 	switch (NewState)
 	{
@@ -383,7 +449,6 @@ void AEnemyCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 	
-	UpdateTargetLocation();
 	DrawSightCone();
 	DrawDebugInfo();
 	UpdateDetection(DeltaTime);
@@ -397,7 +462,7 @@ void AEnemyCharacter::Tick(float DeltaTime)
 	switch (CurrentState)
 	{
 	case EEnemyState::Patrol:
-		TickPatrol();
+		TickPatrol(DeltaTime);
 		break;
 		
 	case EEnemyState::Suspicious:
