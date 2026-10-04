@@ -132,7 +132,7 @@ void AEnemyCharacter::TickPatrolRoute(float DeltaTime)
 	// Ask A* for a path to the current waypoint.
 	if (!bPatrolPathRequested)
 	{
-		CurrentPath = PathfindingSubsystem->GetPath(GetActorLocation(), PatrolRoute[PatrolTargetIndex]);
+		CurrentPath = BuildPath(PatrolRoute[PatrolTargetIndex]);
 		bPatrolPathRequested = true;
 		
 		// The path starts at the node the guard is standing on. Drop points it is already at, so the
@@ -254,15 +254,55 @@ void AEnemyCharacter::TickAlerted(float DeltaTime)
 		return;
 	}
 	
-	// Chase the last known position. Repath when the current path runs out.
-	if (CurrentPath.IsEmpty() && PathfindingSubsystem && DetectionComponent
-		&& DetectionComponent->HasLastKnownLocation())
+	const bool bCanSeePlayer = bPlayerVisible && SensedPlayer;
+	
+	// Stand and shoot once the player is inside EngageRange. Chasing only resumes beyond the larger
+	// ResumeChaseRange, so the guard does not stutter at the edge. Out of sight, always chase.
+	if (bCanSeePlayer)
 	{
-		CurrentPath = PathfindingSubsystem->GetPath(GetActorLocation(), DetectionComponent->GetLastKnownLocation());
+		const float DistanceToPlayer = FVector::Dist(GetActorLocation(), SensedPlayer->GetActorLocation());
+		if (bHoldingPosition)
+		{
+			if (DistanceToPlayer >= ResumeChaseRange)
+			{
+				bHoldingPosition = false;
+			}
+		}
+		else if (DistanceToPlayer <= EngageRange)
+		{
+			bHoldingPosition = true;
+			CurrentPath.Empty();
+		}
+	}
+	else
+	{
+		bHoldingPosition = false;
 	}
 	
-	const bool bCanSeePlayer = bPlayerVisible && SensedPlayer;
-	MoveAlongPath(DeltaTime, false);
+	if (!bHoldingPosition)
+	{
+		RepathTimer -= DeltaTime;
+		
+		// While the player is in sight, rebuild the path on an interval so the guard follows them. Out of
+		// sight, build it once to the last known position, and stop rebuilding once the guard is there.
+		if (DetectionComponent && DetectionComponent->HasLastKnownLocation() && RepathTimer <= 0.0f)
+		{
+			const FVector Destination = DetectionComponent->GetLastKnownLocation();
+			const bool bFarFromDestination = FVector::DistSquared2D(GetActorLocation(), Destination)
+				> FMath::Square(PathingLocationThreshold);
+			
+			if (bCanSeePlayer || (CurrentPath.IsEmpty() && bFarFromDestination))
+			{
+				CurrentPath = BuildPath(Destination);
+				CurrentPath.Add(Destination); // End at the exact spot, not just the nearest node.
+				RepathTimer = RepathInterval;
+			}
+		}
+		MoveAlongPath(DeltaTime, false);
+	}
+	
+	// The guard never turns to face its path while chasing. It looks at the player while they are in
+	// sight, and at the spot where they were last seen once they are not.
 	if (bCanSeePlayer)
 	{
 		FaceLocation(SensedPlayer->GetActorLocation(), DeltaTime, TrackTurnSpeed);
@@ -272,8 +312,8 @@ void AEnemyCharacter::TickAlerted(float DeltaTime)
 		FaceLocation(DetectionComponent->GetLastKnownLocation(), DeltaTime, TrackTurnSpeed);
 	}
 	
-	// Only shoot while the player is actually in sight.
-	if (bPlayerVisible && SensedPlayer)
+	// Shoot whenever the player is in sight, whether running or standing.
+	if (bCanSeePlayer)
 	{
 		if (OutOfAmmo())
 		{
@@ -343,6 +383,23 @@ void AEnemyCharacter::MoveAlongPath(float DeltaTime, bool bFaceMovement)
 	{
 		CurrentPath.RemoveAt(0);
 	}
+}
+
+TArray<FVector> AEnemyCharacter::BuildPath(const FVector& Destination)
+{
+	if (!PathfindingSubsystem) return TArray<FVector>();
+	
+	TArray<FVector> Path = PathfindingSubsystem->GetPath(GetActorLocation(), Destination);
+	
+	// A* starts at the node nearest the guard, which can be behind it. If the guard is already closer to
+	// the second point than the first point is, the first point is behind it, so drop it.
+	while (Path.Num() >= 2
+		&& FVector::DistSquared(GetActorLocation(), Path[1]) < FVector::DistSquared(Path[0], Path[1]))
+	{
+		Path.RemoveAt(0);
+	}
+	
+	return Path;
 }
 
 void AEnemyCharacter::OnSensedActor(AActor* Actor, FAIStimulus Stimulus)
@@ -511,6 +568,8 @@ void AEnemyCharacter::EnterState(EEnemyState NewState)
 		// A floor of 1.0 holds the meter full for as long as the guard is Alerted.
 		if (DetectionComponent) DetectionComponent->SetMeterFloor(1.0f);
 		LostSightTimer = 0.0f;
+		bHoldingPosition = false;
+		RepathTimer = 0.0f; // Build a path on the first tick.
 		break;
 		
 	case EEnemyState::Search:

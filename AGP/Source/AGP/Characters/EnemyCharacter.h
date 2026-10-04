@@ -113,6 +113,23 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "AI | Alerted")
 	float LoseTargetDuration = 5.0f;
 	
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Alerted")
+	float EngageRange = 600.0f;
+	
+	// The guard only starts chasing again once the player is beyond this. Larger than EngageRange so a
+	// player at the edge of the range does not make the guard stutter between stopping and running.
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Alerted")
+	float ResumeChaseRange = 800.0f;
+	
+	// Seconds between path rebuilds while chasing.
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Alerted")
+	float RepathInterval = 0.5f;
+	
+	// True while the guard is standing still to shoot.
+	bool bHoldingPosition = false;
+	
+	float RepathTimer = 0.0f;
+	
 	// Seconds the player has been out of sight while Alerted. 
 	float LostSightTimer = 0.0f;
 	
@@ -155,6 +172,7 @@ protected:
 	void TickDeath();
 	
 	void MoveAlongPath(float DeltaTime, bool bFaceMovement = true);
+	TArray<FVector> BuildPath(const FVector& Destination);
 	
 	UFUNCTION()
 	void OnSensedActor(AActor* Actor, FAIStimulus Stimulus);
