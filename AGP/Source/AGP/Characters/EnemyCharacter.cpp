@@ -12,6 +12,7 @@
 #include "DrawDebugHelpers.h"
 #include "AGP/Components/DetectionComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "AGP/Pathfinding/NavigationNode.h"
 
 // Sets default values
 AEnemyCharacter::AEnemyCharacter()
@@ -66,6 +67,14 @@ void AEnemyCharacter::BeginPlay()
 		CurrentPath = PathfindingSubsystem->GetRandomPath(GetActorLocation());
 	}
 	
+	for (const ANavigationNode* Node : PatrolNodes)
+	{
+		if (Node)
+		{
+			PatrolRoute.Add(Node->GetActorLocation());
+		}
+	}
+	
 	if (AIPerceptionComponent)
 	{
 		AIPerceptionComponent->OnTargetPerceptionUpdated.AddDynamic(this, &AEnemyCharacter::OnSensedActor);
@@ -90,6 +99,12 @@ void AEnemyCharacter::TickPatrol(float DeltaTime)
 		}
 	}
 	
+	if (PatrolRoute.Num() >= 2 && PathfindingSubsystem)
+	{
+		TickPatrolRoute(DeltaTime);
+		return;
+	}
+	
 	if (CurrentPath.IsEmpty())
 	{
 		if (PathfindingSubsystem)
@@ -98,6 +113,90 @@ void AEnemyCharacter::TickPatrol(float DeltaTime)
 		}
 	}
 	MoveAlongPath(DeltaTime);
+}
+
+void AEnemyCharacter::TickPatrolRoute(float DeltaTime)
+{
+	// Waiting at an end point: stand still. This is the window for the player to get close.
+	if (bWaitingAtEnd)
+	{
+		PatrolWaitTimer -= DeltaTime;
+		if (PatrolWaitTimer <= 0.0f)
+		{
+			bWaitingAtEnd = false;
+			bTurnBeforeWalking = true;
+		}
+		return;
+	}
+	
+	// Ask A* for a path to the current waypoint.
+	if (!bPatrolPathRequested)
+	{
+		CurrentPath = PathfindingSubsystem->GetPath(GetActorLocation(), PatrolRoute[PatrolTargetIndex]);
+		bPatrolPathRequested = true;
+		
+		// The path starts at the node the guard is standing on. Drop points it is already at, so the
+		// turn below faces the real next point.
+		while (!CurrentPath.IsEmpty()
+			&& FVector::DistSquared2D(CurrentPath[0], GetActorLocation()) <= FMath::Square(PathingLocationThreshold))
+		{
+			CurrentPath.RemoveAt(0);
+		}
+	}
+	
+	// After a wait, turn around on the spot first, so the guard does not back away while still turning.
+	if (bTurnBeforeWalking && !CurrentPath.IsEmpty())
+	{
+		FaceLocation(CurrentPath[0], DeltaTime);
+		
+		const FVector ToNext = CurrentPath[0] - GetActorLocation();
+		if (ToNext.SizeSquared2D() > FMath::Square(PathingLocationThreshold)
+			&& FVector::DotProduct(GetActorForwardVector(), ToNext.GetSafeNormal2D()) < 0.95f)
+		{
+			return;
+		}
+	}
+	bTurnBeforeWalking = false;
+	
+	MoveAlongPath(DeltaTime);
+	
+	// MoveAlongPath removes points as it reaches them, so an empty path means we have arrived.
+	if (CurrentPath.IsEmpty())
+	{
+		bPatrolPathRequested = false;
+		OnReachedWaypoint();
+	}
+}
+
+void AEnemyCharacter::OnReachedWaypoint()
+{
+	const int32 LastIndex = PatrolRoute.Num() - 1;
+	const bool bAtEnd = PatrolTargetIndex == 0 || PatrolTargetIndex == LastIndex;
+	
+	// Back and forth: reverse direction at either end of the route.
+	if (bAtEnd)
+	{
+		PatrolDirection = (PatrolTargetIndex == 0) ? 1 : -1;
+	}
+	PatrolTargetIndex = FMath::Clamp(PatrolTargetIndex + PatrolDirection, 0, LastIndex);
+	
+	// Only the end points get a wait. Middle waypoints are walked straight through.
+	if (bAtEnd)
+	{
+		bWaitingAtEnd = true;
+		PatrolWaitTimer = PatrolWaitDuration;
+	}
+}
+
+void AEnemyCharacter::SetPatrolRoute(const TArray<FVector>& NewRoute)
+{
+	PatrolRoute = NewRoute;
+	PatrolTargetIndex = 0;
+	PatrolDirection = 1;
+	bPatrolPathRequested = false;
+	bWaitingAtEnd = false;
+	bTurnBeforeWalking = false;
+	CurrentPath.Empty();
 }
 
 void AEnemyCharacter::TickSuspicious(float DeltaTime)
@@ -129,11 +228,11 @@ void AEnemyCharacter::TickSuspicious(float DeltaTime)
 	
 	if (bPlayerVisible && SensedPlayer)
 	{
-		FaceLocation(SensedPlayer->GetActorLocation(), DeltaTime);
+		FaceLocation(SensedPlayer->GetActorLocation(), DeltaTime, TrackTurnSpeed);
 	}
 	else if (DetectionComponent->HasLastKnownLocation())
 	{
-		FaceLocation(DetectionComponent->GetLastKnownLocation(), DeltaTime);
+		FaceLocation(DetectionComponent->GetLastKnownLocation(), DeltaTime, TrackTurnSpeed);
 	}
 }
 
@@ -166,11 +265,11 @@ void AEnemyCharacter::TickAlerted(float DeltaTime)
 	MoveAlongPath(DeltaTime, false);
 	if (bCanSeePlayer)
 	{
-		FaceLocation(SensedPlayer->GetActorLocation(), DeltaTime);
+		FaceLocation(SensedPlayer->GetActorLocation(), DeltaTime, TrackTurnSpeed);
 	}
 	else if (DetectionComponent && DetectionComponent->HasLastKnownLocation())
 	{
-		FaceLocation(DetectionComponent->GetLastKnownLocation(), DeltaTime);
+		FaceLocation(DetectionComponent->GetLastKnownLocation(), DeltaTime, TrackTurnSpeed);
 	}
 	
 	// Only shoot while the player is actually in sight.
@@ -359,15 +458,17 @@ void AEnemyCharacter::ApplyStateSpeed(EEnemyState State)
 	}
 }
 
-void AEnemyCharacter::FaceLocation(const FVector& Location, float DeltaTime)
+void AEnemyCharacter::FaceLocation(const FVector& Location, float DeltaTime, float Speed)
 {
 	FVector ToTarget = Location - GetActorLocation();
 	ToTarget.Z = 0.0f; 
 	
 	if (ToTarget.IsNearlyZero()) return;
 	
+	const float TurnRate = Speed > 0.0f ? Speed : TurnSpeed;
+	
 	// FixedTurn moves the yaw toward the target by at most this frame's turn, handling the 360 wrap.
-	const float NewYaw = FMath::FixedTurn(GetActorRotation().Yaw, ToTarget.Rotation().Yaw, TurnSpeed * DeltaTime);
+	const float NewYaw = FMath::FixedTurn(GetActorRotation().Yaw, ToTarget.Rotation().Yaw, TurnRate * DeltaTime);
 	SetActorRotation(FRotator(0.0f, NewYaw, 0.0f));
 }
 
@@ -394,6 +495,10 @@ void AEnemyCharacter::EnterState(EEnemyState NewState)
 	{
 	case EEnemyState::Patrol:
 		if (DetectionComponent) DetectionComponent->SetMeterFloor(0.0f);
+		// Resume the route toward the same waypoint, not partway through a wait.
+		bPatrolPathRequested = false;
+		bWaitingAtEnd = false;
+		bTurnBeforeWalking = false;
 		break;
 		
 	case EEnemyState::Suspicious:

@@ -11,6 +11,8 @@ class UAIPerceptionComponent;
 class APlayerCharacter;
 class UAISenseConfig_Sight;
 class UDetectionComponent;
+class ANavigationNode;
+
 
 UENUM(BlueprintType)
 enum class EEnemyState:uint8 
@@ -72,6 +74,33 @@ protected:
 	void DrawSightCone() const;
 	void DrawDebugInfo() const;
 	
+	// Waypoints for this guard's route, picked in order in the editor for now. The guard walks them back and forth, it falls back to random patrol.
+	UPROPERTY(EditInstanceOnly, Category = "AI | Patrol")
+	TArray<ANavigationNode*> PatrolNodes;
+	
+	// Seconds a guard stands still at either end of its route before turning around.
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Patrol")
+	float PatrolWaitDuration = 5.0f;
+	
+	// The route as positions, built from PatrolNodes at BeginPlay or set directly with SetPatrolRoute.
+	TArray<FVector> PatrolRoute;
+	
+	// Index of the waypoint the guard is heading to, and which way along the route it is going (+1 or -1).
+	int32 PatrolTargetIndex = 0;
+	int32 PatrolDirection = 1;
+	
+	// True once a path to the current waypoint has been requested.
+	bool bPatrolPathRequested = false;
+	
+	bool bWaitingAtEnd = false;
+	float PatrolWaitTimer = 0.0f;
+	
+	// Set after a wait: the guard turns on the spot to face the way back before it starts walking.
+	bool bTurnBeforeWalking = false;
+	
+	void TickPatrolRoute(float DeltaTime);
+	void OnReachedWaypoint();
+	
 	UPROPERTY(EditDefaultsOnly, Category = "AI | Search")
 	float SearchDuration = 12.0f;
 	
@@ -107,12 +136,15 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "AI | Movement")
 	float TurnSpeed = 180.0f;
 	
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Movement")
+	float TrackTurnSpeed = 720.0f;
+	
 	
 	void SetState(EEnemyState NewState);
 	void EnterState(EEnemyState NewState);
 	void ExitState(EEnemyState OldState);
 	void ApplyStateSpeed(EEnemyState State);
-	void FaceLocation(const FVector& Location, float DeltaTime);
+	void FaceLocation(const FVector& Location, float DeltaTime, float Speed = 0.0f);
 	void EndSearch();
 	
 	
@@ -141,5 +173,8 @@ public:
 
 	// Called to bind functionality to input
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+	
+	// Replaces this guard's patrol route (e.g. from the level generator). Needs two or more points.
+	void SetPatrolRoute(const TArray<FVector>& NewRoute);
 
 };
