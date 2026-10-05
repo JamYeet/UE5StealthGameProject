@@ -156,6 +156,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "AI | Alerted")
 	float RepathInterval = 0.5f;
 	
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Alerted", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float AlertedDamageMultiplier = 0.25f;
+	
 	// True while the guard is standing still to shoot.
 	bool bHoldingPosition = false;
 	
@@ -233,5 +236,7 @@ public:
 	
 	// Replaces this guard's patrol route (e.g. from the level generator). Needs two or more points.
 	void SetPatrolRoute(const TArray<FVector>& NewRoute);
+	
+	virtual float TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser) override;
 
 };

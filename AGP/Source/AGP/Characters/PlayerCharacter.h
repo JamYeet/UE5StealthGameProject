@@ -37,12 +37,30 @@ protected:
 	
 	UPROPERTY(EditDefaultsOnly)
 	UInputAction* ReloadAction;
+	
+	UPROPERTY(EditDefaultsOnly)
+	UInputAction* MeleeAction;
 
 	UPROPERTY(EditDefaultsOnly)
 	UInputMappingContext* InputMappingContext;
 
 	UPROPERTY(EditDefaultsOnly, meta = (UIMin = "0.0", UIMax = "1.0"))
 	float LookSensitivity;
+	
+	// Melee reach in cm, measured from the camera.
+	UPROPERTY(EditDefaultsOnly, Category = "Melee")
+	float MeleeRange = 150.0f;
+	
+	// Damage dealt by one melee hit.
+	UPROPERTY(EditDefaultsOnly, Category = "Melee")
+	float MeleeDamage = 100.0f;
+	
+	// Melee swinging cooldown.
+	UPROPERTY(EditDefaultsOnly, Category = "Melee")
+	float MeleeCooldown = 0.7f;
+	
+	// World time of the last swing.
+	float LastMeleeTime = -1000.0f;
 
 	
 
@@ -59,6 +77,7 @@ private:
 	void Look(const FInputActionValue& Value);
 	void FireWeapon(const FInputActionValue& Value);
 	void ReloadWeapon(const FInputActionValue& Value);
+	void Melee(const FInputActionValue& Value);
 
 
 };

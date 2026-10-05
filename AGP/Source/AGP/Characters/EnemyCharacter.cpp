@@ -15,6 +15,7 @@
 #include "AGP/Pathfinding/NavigationNode.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Engine/DamageEvents.h"
 
 
 // Sets default values
@@ -746,6 +747,17 @@ void AEnemyCharacter::UpdateDetection(float DeltaTime)
 	const float Distance = bCanSee ? FVector::Dist(GetActorLocation(), PlayerLocation) : 0.0f;
 	
 	DetectionComponent->UpdateDetection(DeltaTime, bCanSee, PlayerLocation, Distance);
+}
+
+float AEnemyCharacter::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
+{
+	// Only an Alerted guard is protected. Patrol, Suspicious and Search guards take full damage.
+	if (CurrentState == EEnemyState::Alerted)
+	{
+		DamageAmount *= AlertedDamageMultiplier;
+	}
+	
+	return Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
 }
 
 // Called every frame

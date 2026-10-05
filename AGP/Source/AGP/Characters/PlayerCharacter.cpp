@@ -5,7 +5,7 @@
 #include <InputAction.h>
 #include <EnhancedInputSubsystems.h>
 #include <EnhancedInputComponent.h>
-
+#include "Engine/DamageEvents.h"
 #include "Kismet/KismetMathLibrary.h"
 
 
@@ -73,6 +73,42 @@ void APlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 		if (ReloadAction)
 		{
 			Input->BindAction(ReloadAction, ETriggerEvent::Triggered, this, &APlayerCharacter::ReloadWeapon);
+		}
+		if (MeleeAction)
+		{
+			// Started fires once per press, so holding the button does not swing repeatedly.
+			Input->BindAction(MeleeAction, ETriggerEvent::Started, this, &APlayerCharacter::Melee);
+		}
+	}
+}
+
+void APlayerCharacter::Melee(const FInputActionValue& Value)
+{
+	// Respect the cooldown between swings.
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (Now - LastMeleeTime < MeleeCooldown) return;
+	LastMeleeTime = Now;
+	
+	AController* PlayerController = GetController();
+	if (!PlayerController) return;
+	
+	// Sweep from the camera along the direction the player is looking.
+	FVector CameraPosition;
+	FRotator CameraRotation;
+	PlayerController->GetPlayerViewPoint(CameraPosition, CameraRotation);
+	const FVector SweepEnd = CameraPosition + CameraRotation.Vector() * MeleeRange;
+	
+	FHitResult HitResult;
+	FCollisionQueryParams QueryParams;
+	QueryParams.AddIgnoredActor(this);
+	
+	if (GetWorld()->SweepSingleByChannel(HitResult, CameraPosition, SweepEnd, FQuat::Identity,
+		ECC_Pawn, FCollisionShape::MakeSphere(25.0f), QueryParams))
+	{
+		// The target decides what the damage does, so a guard can take less when it is Alerted.
+		if (ABaseCharacter* Target = Cast<ABaseCharacter>(HitResult.GetActor()))
+		{
+			Target->TakeDamage(MeleeDamage, FDamageEvent(), PlayerController, this);
 		}
 	}
 }
