@@ -13,6 +13,13 @@ class UAISenseConfig_Sight;
 class UDetectionComponent;
 class ANavigationNode;
 
+// Search mode: Walking to node, Looking around that node.
+enum class ESearchPhase : uint8
+{
+	MovingToNode,
+	LookingAround,
+	FinalWait
+};
 
 UENUM(BlueprintType)
 enum class EEnemyState:uint8 
@@ -102,7 +109,31 @@ protected:
 	void OnReachedWaypoint();
 	
 	UPROPERTY(EditDefaultsOnly, Category = "AI | Search")
-	float SearchDuration = 12.0f;
+	float SearchDuration = 30.0f;
+	
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Search")
+	float SearchLookPauseDuration = 1.0f;
+	
+	// Seconds the guard stands still at the search node after the last look before giving up.
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Search")
+	float SearchEndWaitDuration = 5.0f;
+	
+	ESearchPhase SearchPhase = ESearchPhase::MovingToNode;
+	
+	// False if no search node could be found, in which case the search ends straight away.
+	bool bSearchHasNode = false;
+	
+	// The node nearest the last known position, where the guard stops to look around.
+	FVector SearchNodeLocation = FVector::ZeroVector;
+	
+	// Locations to look toward from that node, sorted clockwise by direction.
+	TArray<FVector> SearchLookTargets;
+	
+	// Which look target the sweep starts from (the one nearest the way the guard arrives facing), how many
+	// have been looked at so far, and the pause timer for the current one.
+	int32 SearchLookStart = 0;
+	int32 SearchLooksDone = 0;
+	float SearchPauseTimer = 0.0f;
 	
 	UPROPERTY(EditDefaultsOnly, Category = "AI | Suspicious")
 	float SuspiciousDuration = 3.0f;
@@ -136,6 +167,10 @@ protected:
 	// Seconds left in the current search. 
 	float SearchTimer = 0.0f;
 	
+	// Seconds a dead guard's body stays in the world before it is destroyed.
+	UPROPERTY(EditDefaultsOnly, Category = "AI | Death")
+	float DeathLifeSpan = 10.0f;
+	
 	// Walk speeds per state in cm/s. Suspicious and Death stand still.
 	UPROPERTY(EditDefaultsOnly, Category = "AI | Movement")
 	float PatrolSpeed = 150.0f;
@@ -157,13 +192,15 @@ protected:
 	float TrackTurnSpeed = 720.0f;
 	
 	
+	
+	
 	void SetState(EEnemyState NewState);
 	void EnterState(EEnemyState NewState);
 	void ExitState(EEnemyState OldState);
 	void ApplyStateSpeed(EEnemyState State);
 	void FaceLocation(const FVector& Location, float DeltaTime, float Speed = 0.0f);
 	void EndSearch();
-	
+	void Die();
 	
 	void TickPatrol(float DeltaTime);
 	void TickSuspicious(float DeltaTime);
@@ -173,6 +210,8 @@ protected:
 	
 	void MoveAlongPath(float DeltaTime, bool bFaceMovement = true);
 	TArray<FVector> BuildPath(const FVector& Destination);
+	
+	void BuildSearchLookTargets(const FVector& NodeLocation, const TArray<FVector>& ConnectedLocations);
 	
 	UFUNCTION()
 	void OnSensedActor(AActor* Actor, FAIStimulus Stimulus);

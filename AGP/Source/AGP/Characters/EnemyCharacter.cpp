@@ -13,6 +13,9 @@
 #include "AGP/Components/DetectionComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "AGP/Pathfinding/NavigationNode.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+
 
 // Sets default values
 AEnemyCharacter::AEnemyCharacter()
@@ -90,7 +93,7 @@ void AEnemyCharacter::TickPatrol(float DeltaTime)
 		if (DetectionComponent->IsMeterFull())
 		{
 			SetState(EEnemyState::Alerted);
-				return;
+			return;
 		}
 		if (DetectionComponent->IsAboveSuspiciousThreshold())
 		{
@@ -341,12 +344,91 @@ void AEnemyCharacter::TickSearch(float DeltaTime)
 		return;
 	}
 	
-	// Placeholder: the guard stands still until the timer runs out. Real searching is step 4.
+	// Failsafe: a search always ends after SearchDuration seconds, however far it has got.
 	SearchTimer -= DeltaTime;
-	if (SearchTimer <= 0.0f)
+	if (SearchTimer <= 0.0f || !bSearchHasNode)
 	{
 		EndSearch();
+		return;
 	}
+	
+	switch (SearchPhase)
+	{
+	case ESearchPhase::MovingToNode:
+		MoveAlongPath(DeltaTime);
+		
+		// MoveAlongPath removes points as it reaches them, so an empty path means the guard has arrived.
+		if (CurrentPath.IsEmpty())
+		{
+			// Start the sweep from the direction nearest the way the guard is already facing.
+			const float CurrentYaw = GetActorRotation().Yaw;
+			float SmallestDifference = FLT_MAX;
+			SearchLookStart = 0;
+			
+			for (int32 i = 0; i < SearchLookTargets.Num(); ++i)
+			{
+				const float TargetYaw = (SearchLookTargets[i] - GetActorLocation()).Rotation().Yaw;
+				const float Difference = FMath::Abs(FMath::FindDeltaAngleDegrees(CurrentYaw, TargetYaw));
+				if (Difference < SmallestDifference)
+				{
+					SmallestDifference = Difference;
+					SearchLookStart = i;
+				}
+			}
+			
+			SearchLooksDone = 0;
+			SearchPauseTimer = 0.0f;
+			SearchPhase = ESearchPhase::LookingAround;
+		}
+		break;
+		
+	case ESearchPhase::LookingAround:
+		{
+			// A node with no connections has nothing to look at.
+			if (SearchLookTargets.IsEmpty())
+			{
+				SearchPhase = ESearchPhase::FinalWait;
+				SearchPauseTimer = 0.0f;
+				return;
+			}
+			
+			// Turn to the current direction. Only once the guard is actually facing it does the pause start.
+			const FVector LookTarget = SearchLookTargets[(SearchLookStart + SearchLooksDone) % SearchLookTargets.Num()];
+			FaceLocation(LookTarget, DeltaTime);
+			
+			const float YawError = FMath::Abs(FMath::FindDeltaAngleDegrees(
+				GetActorRotation().Yaw, (LookTarget - GetActorLocation()).Rotation().Yaw));
+			
+			if (YawError < 2.0f)
+			{
+				SearchPauseTimer += DeltaTime;
+				if (SearchPauseTimer >= SearchLookPauseDuration)
+				{
+					SearchPauseTimer = 0.0f;
+					++SearchLooksDone;
+					
+					// Every direction has been looked at: nothing found, so the search is over.
+					if (SearchLooksDone >= SearchLookTargets.Num())
+					{
+						SearchPhase = ESearchPhase::FinalWait;
+						SearchPauseTimer = 0.0f;
+					}
+				}
+			}
+		}
+		break;
+	
+	case ESearchPhase::FinalWait:
+		// Stand still facing the last direction for a moment, a last chance to spot the player.
+		SearchPauseTimer += DeltaTime;
+		if (SearchPauseTimer >= SearchEndWaitDuration)
+		{
+			EndSearch();
+			return;
+		}
+		break;
+	}
+	
 }
 
 void AEnemyCharacter::EndSearch()
@@ -360,9 +442,43 @@ void AEnemyCharacter::EndSearch()
 	SetState(EEnemyState::Patrol);
 }
 
+void AEnemyCharacter::BuildSearchLookTargets(const FVector& NodeLocation, const TArray<FVector>& ConnectedLocations)
+{
+	SearchLookTargets = ConnectedLocations;
+	
+	// Sort clockwise by the yaw of the direction from the node, so the guard sweeps around smoothly
+	// instead of zig-zagging between directions.
+	SearchLookTargets.Sort([&NodeLocation](const FVector& A, const FVector& B)
+	{
+		return FRotator::ClampAxis((A - NodeLocation).Rotation().Yaw)
+			< FRotator::ClampAxis((B - NodeLocation).Rotation().Yaw);
+	});
+}
+
+void AEnemyCharacter::Die()
+{
+	// Stop all movement, and stop the capsule blocking the player and other guards.
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->StopMovementImmediately();
+		Movement->DisableMovement();
+	}
+	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	
+	// Ragdoll: the skeletal mesh simulates physics and collides using the Ragdoll profile.
+	if (USkeletalMeshComponent* SkeletalMesh = GetMesh())
+	{
+		SkeletalMesh->SetCollisionProfileName(TEXT("Ragdoll"));
+		SkeletalMesh->SetSimulatePhysics(true);
+	}
+	
+	// Remove the body after a delay.
+	SetLifeSpan(DeathLifeSpan);
+}
+
 void AEnemyCharacter::TickDeath()
 {
-	// Placeholder. Stopping movement and disabling collision is step 4.
+	// Nothing happens on death per tick yet.
 }
 
 void AEnemyCharacter::MoveAlongPath(float DeltaTime, bool bFaceMovement)
@@ -442,7 +558,7 @@ bool AEnemyCharacter::OutOfAmmo()
 void AEnemyCharacter::DrawSightCone() const
 {
 #if ENABLE_DRAW_DEBUG
-	if (!bDrawDebug || !SightConfig) return;
+	if (!bDrawDebug || !SightConfig || CurrentState == EEnemyState::Death) return;
 
 	// The eye point and direction are where the perception system looks from
 	FVector EyeLocation;
@@ -576,16 +692,40 @@ void AEnemyCharacter::EnterState(EEnemyState NewState)
 		// The meter decays from full down to the suspicious threshold and holds there.
 		if (DetectionComponent) DetectionComponent->SetMeterFloor(DetectionComponent->GetSuspiciousThreshold());
 		SearchTimer = SearchDuration;
+		
+		// Plan the search: walk to the node nearest the last known position, then look down every
+		// direction that node connects to.
+		SearchPhase = ESearchPhase::MovingToNode;
+		SearchLookTargets.Reset();
+		SearchLookStart = 0;
+		SearchLooksDone = 0;
+		SearchPauseTimer = 0.0f;
+		bSearchHasNode = false;
+		
+		if (PathfindingSubsystem && DetectionComponent && DetectionComponent->HasLastKnownLocation())
+		{
+			TArray<FVector> ConnectedLocations;
+			bSearchHasNode = PathfindingSubsystem->GetNearestNodeInfo(
+				DetectionComponent->GetLastKnownLocation(), SearchNodeLocation, ConnectedLocations);
+			
+			if (bSearchHasNode)
+			{
+				BuildSearchLookTargets(SearchNodeLocation, ConnectedLocations);
+				CurrentPath = BuildPath(SearchNodeLocation);
+				UE_LOG(LogTemp, Display, TEXT("%s search plan: %d directions to look at"), *GetName(), SearchLookTargets.Num());
+			}
+		}
 		break;
 		
 	case EEnemyState::Death:
+		Die();
 		break;
 	}
 }
 
 void AEnemyCharacter::ExitState(EEnemyState OldState)
 {
-	// Nothing to clean up yet. Step 3 (speeds) and step 4 (behaviours) will use this.
+	// Nothing to clean up yet
 	switch (OldState)
 	{
 	case EEnemyState::Patrol:
@@ -617,7 +757,9 @@ void AEnemyCharacter::Tick(float DeltaTime)
 	DrawDebugInfo();
 	UpdateDetection(DeltaTime);
 	
-		
+	// Temp
+	if (GetGameTimeSinceCreation() > 15.0f && HealthComponent) HealthComponent->ApplyDamage(100.0f);
+	
 	if (HealthComponent && HealthComponent->IsDead())
 	{
 		SetState(EEnemyState::Death);

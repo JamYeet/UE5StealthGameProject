@@ -130,6 +130,29 @@ TArray<FVector> UPathfindingSubsystem::GetWaypointPositions()
 
 }
 
+bool UPathfindingSubsystem::GetNearestNodeInfo(const FVector& Location, FVector& OutNodeLocation,
+	TArray<FVector>& OutConnectedLocations)
+{
+	ANavigationNode* Node = FindNearestNode(Location);
+	if (!Node)
+	{
+		return false;
+	}
+	
+	OutNodeLocation = Node->GetActorLocation();
+	
+	OutConnectedLocations.Reset();
+	for (const ANavigationNode* Connected : Node->GetConnectedNodes())
+	{
+		if (Connected)
+		{
+			OutConnectedLocations.Add(Connected->GetActorLocation());
+		}
+	}
+	
+	return true;
+}
+
 void UPathfindingSubsystem::PopulateNodes()
 {
 	Nodes.Empty();

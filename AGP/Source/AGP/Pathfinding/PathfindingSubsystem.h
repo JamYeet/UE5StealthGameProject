@@ -27,6 +27,10 @@ public:
 	
 	TArray<FVector> GetWaypointPositions();
 	
+	// Finds the node nearest a location and returns its position and the positions of the nodes it
+	// connects to. Returns false if there are no nodes.
+	bool GetNearestNodeInfo(const FVector& Location, FVector& OutNodeLocation, TArray<FVector>& OutConnectedLocations);
+	
 protected:
 	UPROPERTY()
 	TArray<ANavigationNode*> Nodes;
