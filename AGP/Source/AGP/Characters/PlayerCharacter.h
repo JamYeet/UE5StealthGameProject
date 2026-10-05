@@ -49,7 +49,7 @@ protected:
 	
 	// Melee reach in cm, measured from the camera.
 	UPROPERTY(EditDefaultsOnly, Category = "Melee")
-	float MeleeRange = 150.0f;
+	float MeleeRange = 60.0f;
 	
 	// Damage dealt by one melee hit.
 	UPROPERTY(EditDefaultsOnly, Category = "Melee")

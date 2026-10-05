@@ -521,6 +521,8 @@ TArray<FVector> AEnemyCharacter::BuildPath(const FVector& Destination)
 
 void AEnemyCharacter::OnSensedActor(AActor* Actor, FAIStimulus Stimulus)
 {
+	if (CurrentState == EEnemyState::Death) return;
+	
 	if (APlayerCharacter* Player = Cast<APlayerCharacter>(Actor))
 	{
 		// This event fires when sight is gained and when it is lost.
@@ -593,7 +595,7 @@ void AEnemyCharacter::DrawDebugInfo() const
 	// Duration 0 draws for one frame, since this is redrawn every tick.
 	DrawDebugString(GetWorld(), FVector(0.0f, 0.0f, 120.0f), StateText, const_cast<AEnemyCharacter*>(this), FColor::White, 0.0f, true);
 
-	if (DetectionComponent && DetectionComponent->HasLastKnownLocation())
+	if (DetectionComponent && DetectionComponent->HasLastKnownLocation() && CurrentState != EEnemyState::Death)
 	{
 		DrawDebugSphere(GetWorld(), DetectionComponent->GetLastKnownLocation(), 50.0f, 8, FColor::Cyan, false, -1.0f, 0, 1.0f);
 	}
@@ -767,14 +769,18 @@ void AEnemyCharacter::Tick(float DeltaTime)
 	
 	DrawSightCone();
 	DrawDebugInfo();
-	UpdateDetection(DeltaTime);
 	
-	// Temp
-	if (GetGameTimeSinceCreation() > 15.0f && HealthComponent) HealthComponent->ApplyDamage(100.0f);
 	
+	// Death overrides every other state, so it is checked first.
 	if (HealthComponent && HealthComponent->IsDead())
 	{
 		SetState(EEnemyState::Death);
+	}
+	
+	// A dead guard no longer senses or tracks the player.
+	if (CurrentState != EEnemyState::Death)
+	{
+		UpdateDetection(DeltaTime);
 	}
 	
 	switch (CurrentState)
