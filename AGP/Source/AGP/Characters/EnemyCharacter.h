@@ -199,7 +199,6 @@ protected:
 	
 	void SetState(EEnemyState NewState);
 	void EnterState(EEnemyState NewState);
-	void ExitState(EEnemyState OldState);
 	void ApplyStateSpeed(EEnemyState State);
 	void FaceLocation(const FVector& Location, float DeltaTime, float Speed = 0.0f);
 	void EndSearch();
@@ -209,7 +208,6 @@ protected:
 	void TickSuspicious(float DeltaTime);
 	void TickAlerted(float DeltaTime);
 	void TickSearch(float DeltaTime);
-	void TickDeath();
 	
 	void MoveAlongPath(float DeltaTime, bool bFaceMovement = true);
 	TArray<FVector> BuildPath(const FVector& Destination);
@@ -230,9 +228,6 @@ protected:
 public:	
 	// Called every frame
 	virtual void Tick(float DeltaTime) override;
-
-	// Called to bind functionality to input
-	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 	
 	// Replaces this guard's patrol route (e.g. from the level generator). Needs two or more points.
 	void SetPatrolRoute(const TArray<FVector>& NewRoute);

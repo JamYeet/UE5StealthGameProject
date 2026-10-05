@@ -28,21 +28,18 @@ AEnemyCharacter::AEnemyCharacter()
 	DetectionComponent = CreateDefaultSubobject<UDetectionComponent>(TEXT("Detection Component"));
 	
 	SightConfig = CreateDefaultSubobject<UAISenseConfig_Sight>(TEXT("Sight Config"));
-	if (SightConfig)
-	{
-		SightConfig->SightRadius = 1500.0f;
-		SightConfig->LoseSightRadius = 1500.0f;
-		SightConfig->PeripheralVisionAngleDegrees = 45.0f; // Half-angle, so a 90 degree cone.
-		SightConfig->SetMaxAge(1.0f);                      // Seconds before a lost stimulus is forgotten.
+	SightConfig->SightRadius = 1500.0f;
+	SightConfig->LoseSightRadius = 1500.0f;
+	SightConfig->PeripheralVisionAngleDegrees = 45.0f; // Half-angle, so a 90 degree cone.
+	SightConfig->SetMaxAge(1.0f);                      // Seconds before a lost stimulus is forgotten.
 
-		// The player is team 1 and guards are team 2, so the player counts as an enemy.
-		SightConfig->DetectionByAffiliation.bDetectEnemies = true;
-		SightConfig->DetectionByAffiliation.bDetectNeutrals = false;
-		SightConfig->DetectionByAffiliation.bDetectFriendlies = false;
+	// The player is team 1 and guards are team 2, so the player counts as an enemy.
+	SightConfig->DetectionByAffiliation.bDetectEnemies = true;
+	SightConfig->DetectionByAffiliation.bDetectNeutrals = false;
+	SightConfig->DetectionByAffiliation.bDetectFriendlies = false;
 
-		AIPerceptionComponent->ConfigureSense(*SightConfig);
-		AIPerceptionComponent->SetDominantSense(SightConfig->GetSenseImplementation());
-	}
+	AIPerceptionComponent->ConfigureSense(*SightConfig);
+	AIPerceptionComponent->SetDominantSense(SightConfig->GetSenseImplementation());
 	
 	SensedPlayer = nullptr;
 	PathingLocationThreshold = 150.0f;
@@ -56,13 +53,13 @@ void AEnemyCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	
+	// All turning is done by FaceLocation
 	bUseControllerRotationYaw = false;
-	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
-	{
-		Movement->bOrientRotationToMovement = false;
-		Movement->bUseControllerDesiredRotation = false;
-	}
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	Movement->bOrientRotationToMovement = false;
+	Movement->bUseControllerDesiredRotation = false;
 	
+	// Apply state speed on play
 	ApplyStateSpeed(CurrentState);
 	
 	PathfindingSubsystem = GetWorld()->GetSubsystem<UPathfindingSubsystem>();
@@ -71,6 +68,7 @@ void AEnemyCharacter::BeginPlay()
 		CurrentPath = PathfindingSubsystem->GetRandomPath(GetActorLocation());
 	}
 	
+	// Turns the nodes picked in the editor into a route of positions.
 	for (const ANavigationNode* Node : PatrolNodes)
 	{
 		if (Node)
@@ -88,33 +86,28 @@ void AEnemyCharacter::BeginPlay()
 
 void AEnemyCharacter::TickPatrol(float DeltaTime)
 {
-	if (DetectionComponent)
+	// Full is checked first, so a player at point-blank skips Suspicious.
+	if (DetectionComponent->IsMeterFull())
 	{
-		// Full is checked first, so a player at point-blank skips Suspicious.
-		if (DetectionComponent->IsMeterFull())
-		{
-			SetState(EEnemyState::Alerted);
-			return;
-		}
-		if (DetectionComponent->IsAboveSuspiciousThreshold())
-		{
-			SetState(EEnemyState::Suspicious);
-			return;
-		}
+		SetState(EEnemyState::Alerted);
+		return;
+	}
+	if (DetectionComponent->IsAboveSuspiciousThreshold())
+	{
+		SetState(EEnemyState::Suspicious);
+		return;
 	}
 	
+	// With a route of two or more waypoints, follow it. Otherwise wander between random nodes.
 	if (PatrolRoute.Num() >= 2 && PathfindingSubsystem)
 	{
 		TickPatrolRoute(DeltaTime);
 		return;
 	}
 	
-	if (CurrentPath.IsEmpty())
+	if (CurrentPath.IsEmpty() && PathfindingSubsystem)
 	{
-		if (PathfindingSubsystem)
-		{
-			CurrentPath = PathfindingSubsystem->GetRandomPath(GetActorLocation());
-		}
+		CurrentPath = PathfindingSubsystem->GetRandomPath(GetActorLocation());
 	}
 	MoveAlongPath(DeltaTime);
 }
@@ -332,7 +325,7 @@ void AEnemyCharacter::TickAlerted(float DeltaTime)
 
 void AEnemyCharacter::TickSearch(float DeltaTime)
 {
-	if (DetectionComponent && DetectionComponent->IsMeterFull())
+	if (DetectionComponent->IsMeterFull())
 	{
 		SetState(EEnemyState::Alerted);
 		return;
@@ -435,11 +428,8 @@ void AEnemyCharacter::TickSearch(float DeltaTime)
 void AEnemyCharacter::EndSearch()
 {
 	// Lower the floor first, otherwise it would pull the reset meter straight back up.
-	if (DetectionComponent)
-	{
-		DetectionComponent->SetMeterFloor(0.0f);
-		DetectionComponent->ResetMeter();
-	}
+	DetectionComponent->SetMeterFloor(0.0f);
+	DetectionComponent->ResetMeter();
 	SetState(EEnemyState::Patrol);
 }
 
@@ -459,27 +449,17 @@ void AEnemyCharacter::BuildSearchLookTargets(const FVector& NodeLocation, const 
 void AEnemyCharacter::Die()
 {
 	// Stop all movement, and stop the capsule blocking the player and other guards.
-	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
-	{
-		Movement->StopMovementImmediately();
-		Movement->DisableMovement();
-	}
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	Movement->StopMovementImmediately();
+	Movement->DisableMovement();
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	
 	// Ragdoll: the skeletal mesh simulates physics and collides using the Ragdoll profile.
-	if (USkeletalMeshComponent* SkeletalMesh = GetMesh())
-	{
-		SkeletalMesh->SetCollisionProfileName(TEXT("Ragdoll"));
-		SkeletalMesh->SetSimulatePhysics(true);
-	}
+	GetMesh()->SetCollisionProfileName(TEXT("Ragdoll"));
+	GetMesh()->SetSimulatePhysics(true);
 	
 	// Remove the body after a delay.
 	SetLifeSpan(DeathLifeSpan);
-}
-
-void AEnemyCharacter::TickDeath()
-{
-	// Nothing happens on death per tick yet.
 }
 
 void AEnemyCharacter::MoveAlongPath(float DeltaTime, bool bFaceMovement)
@@ -570,8 +550,8 @@ void AEnemyCharacter::DrawSightCone() const
 
 	// DrawDebugCone takes the half-angle in radians. The colour follows the detection meter.
 	const float HalfAngleRadians = FMath::DegreesToRadians(SightConfig->PeripheralVisionAngleDegrees);
-	const float Meter = DetectionComponent ? DetectionComponent->GetMeter() : 0.0f;
-	const float Threshold = DetectionComponent ? DetectionComponent->GetSuspiciousThreshold() : 0.25f;
+	const float Meter = DetectionComponent->GetMeter();
+	const float Threshold = DetectionComponent->GetSuspiciousThreshold();
 	
 	FLinearColor ConeLinear = FMath::Lerp(FLinearColor::Green, FLinearColor::Yellow,
 		FMath::Clamp(Meter / Threshold, 0.0f, 1.0f));
@@ -588,14 +568,14 @@ void AEnemyCharacter::DrawDebugInfo() const
 #if ENABLE_DRAW_DEBUG
 	if (!bDrawDebug) return;
 
-	const float Meter = DetectionComponent ? DetectionComponent->GetMeter() : 0.0f;
+	const float Meter = DetectionComponent->GetMeter();
 	const FString StateText = FString::Printf(TEXT("%s  %.2f"), *UEnum::GetDisplayValueAsText(CurrentState).ToString(), Meter);
 
 	// Passing 'this' makes the offset relative to the guard, so the text follows it.
 	// Duration 0 draws for one frame, since this is redrawn every tick.
 	DrawDebugString(GetWorld(), FVector(0.0f, 0.0f, 120.0f), StateText, const_cast<AEnemyCharacter*>(this), FColor::White, 0.0f, true);
 
-	if (DetectionComponent && DetectionComponent->HasLastKnownLocation() && CurrentState != EEnemyState::Death)
+	if (DetectionComponent->HasLastKnownLocation() && CurrentState != EEnemyState::Death)
 	{
 		DrawDebugSphere(GetWorld(), DetectionComponent->GetLastKnownLocation(), 50.0f, 8, FColor::Cyan, false, -1.0f, 0, 1.0f);
 	}
@@ -630,7 +610,7 @@ void AEnemyCharacter::ApplyStateSpeed(EEnemyState State)
 	
 	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
 	{
-		Movement->MaxWalkSpeed = Speed;
+		GetCharacterMovement()->MaxWalkSpeed = Speed;
 	}
 }
 
@@ -652,8 +632,6 @@ void AEnemyCharacter::SetState(EEnemyState NewState)
 {
 	if (NewState == CurrentState) return;
 	
-	ExitState(CurrentState);
-	
 	UE_LOG(LogTemp, Display, TEXT("%s: %s -> %s"), *GetName(),
 		*UEnum::GetValueAsString(CurrentState), *UEnum::GetValueAsString(NewState));
 	
@@ -670,7 +648,7 @@ void AEnemyCharacter::EnterState(EEnemyState NewState)
 	switch (NewState)
 	{
 	case EEnemyState::Patrol:
-		if (DetectionComponent) DetectionComponent->SetMeterFloor(0.0f);
+		DetectionComponent->SetMeterFloor(0.0f);
 		// Resume the route toward the same waypoint, not partway through a wait.
 		bPatrolPathRequested = false;
 		bWaitingAtEnd = false;
@@ -679,13 +657,13 @@ void AEnemyCharacter::EnterState(EEnemyState NewState)
 		
 	case EEnemyState::Suspicious:
 		// The meter holds at the threshold while the guard works out what it saw.
-		if (DetectionComponent) DetectionComponent->SetMeterFloor(DetectionComponent->GetSuspiciousThreshold());
+		DetectionComponent->SetMeterFloor(DetectionComponent->GetSuspiciousThreshold());
 		SuspiciousTimer = 0.0f;
 		break;
 		
 	case EEnemyState::Alerted:
 		// A floor of 1.0 holds the meter full for as long as the guard is Alerted.
-		if (DetectionComponent) DetectionComponent->SetMeterFloor(1.0f);
+		DetectionComponent->SetMeterFloor(1.0f);
 		LostSightTimer = 0.0f;
 		bHoldingPosition = false;
 		RepathTimer = 0.0f; // Build a path on the first tick.
@@ -693,7 +671,7 @@ void AEnemyCharacter::EnterState(EEnemyState NewState)
 		
 	case EEnemyState::Search:
 		// The meter decays from full down to the suspicious threshold and holds there.
-		if (DetectionComponent) DetectionComponent->SetMeterFloor(DetectionComponent->GetSuspiciousThreshold());
+		DetectionComponent->SetMeterFloor(DetectionComponent->GetSuspiciousThreshold());
 		SearchTimer = SearchDuration;
 		
 		// Plan the search: walk to the node nearest the last known position, then look down every
@@ -705,7 +683,7 @@ void AEnemyCharacter::EnterState(EEnemyState NewState)
 		SearchPauseTimer = 0.0f;
 		bSearchHasNode = false;
 		
-		if (PathfindingSubsystem && DetectionComponent && DetectionComponent->HasLastKnownLocation())
+		if (PathfindingSubsystem && DetectionComponent->HasLastKnownLocation())
 		{
 			TArray<FVector> ConnectedLocations;
 			bSearchHasNode = PathfindingSubsystem->GetNearestNodeInfo(
@@ -715,27 +693,12 @@ void AEnemyCharacter::EnterState(EEnemyState NewState)
 			{
 				BuildSearchLookTargets(SearchNodeLocation, ConnectedLocations);
 				CurrentPath = BuildPath(SearchNodeLocation);
-				UE_LOG(LogTemp, Display, TEXT("%s search plan: %d directions to look at"), *GetName(), SearchLookTargets.Num());
 			}
 		}
 		break;
 		
 	case EEnemyState::Death:
 		Die();
-		break;
-	}
-}
-
-void AEnemyCharacter::ExitState(EEnemyState OldState)
-{
-	// Nothing to clean up yet
-	switch (OldState)
-	{
-	case EEnemyState::Patrol:
-	case EEnemyState::Suspicious:
-	case EEnemyState::Alerted:
-	case EEnemyState::Search:
-	case EEnemyState::Death:
 		break;
 	}
 }
@@ -772,7 +735,7 @@ void AEnemyCharacter::Tick(float DeltaTime)
 	
 	
 	// Death overrides every other state, so it is checked first.
-	if (HealthComponent && HealthComponent->IsDead())
+	if (HealthComponent->IsDead())
 	{
 		SetState(EEnemyState::Death);
 	}
@@ -802,15 +765,6 @@ void AEnemyCharacter::Tick(float DeltaTime)
 		break;
 		
 	case EEnemyState::Death:
-		TickDeath();
 		break;
 	}
 }
-
-// Called to bind functionality to input
-void AEnemyCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
-{
-	Super::SetupPlayerInputComponent(PlayerInputComponent);
-
-}
-

@@ -26,7 +26,6 @@ public:
 	float GetSuspiciousThreshold() const;
 	bool IsMeterFull() const;
 	bool IsAboveSuspiciousThreshold() const;
-	float GetTimeSinceSeen() const;
 	bool HasLastKnownLocation() const;
 	FVector GetLastKnownLocation() const;
 

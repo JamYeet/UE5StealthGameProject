@@ -68,11 +68,6 @@ bool UDetectionComponent::IsAboveSuspiciousThreshold() const
 	return Meter > SuspiciousThreshold;
 }
 
-float UDetectionComponent::GetTimeSinceSeen() const
-{
-	return TimeSinceSeen;
-}
-
 bool UDetectionComponent::HasLastKnownLocation() const
 {
 	return bHasLastKnownLocation;
