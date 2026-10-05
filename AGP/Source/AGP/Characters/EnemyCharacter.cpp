@@ -17,6 +17,18 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/DamageEvents.h"
 
+namespace
+{
+	// A guard counts as facing a direction once it is within this many degrees of it.
+	constexpr float FacingToleranceDegrees = 2.0f;
+	
+	// A guard counts as facing a point once the dot product of its forward vector and the direction to the point is above this (about 18 degrees).
+	constexpr float FacingDotThreshold = 0.95f;
+	
+	// Debug drawing: height of the state text above the guard, and radius of the last-known-position sphere.
+	constexpr float DebugTextHeight = 120.0f;
+	constexpr float DebugSphereRadius = 50.0f;
+}
 
 // Sets default values
 AEnemyCharacter::AEnemyCharacter()
@@ -41,8 +53,6 @@ AEnemyCharacter::AEnemyCharacter()
 	AIPerceptionComponent->ConfigureSense(*SightConfig);
 	AIPerceptionComponent->SetDominantSense(SightConfig->GetSenseImplementation());
 	
-	SensedPlayer = nullptr;
-	PathingLocationThreshold = 150.0f;
 	TeamID = FGenericTeamId(2);
 	
 	
@@ -63,10 +73,7 @@ void AEnemyCharacter::BeginPlay()
 	ApplyStateSpeed(CurrentState);
 	
 	PathfindingSubsystem = GetWorld()->GetSubsystem<UPathfindingSubsystem>();
-	if (PathfindingSubsystem)
-	{
-		CurrentPath = PathfindingSubsystem->GetRandomPath(GetActorLocation());
-	}
+	CurrentPath = PathfindingSubsystem->GetRandomPath(GetActorLocation());
 	
 	// Turns the nodes picked in the editor into a route of positions.
 	for (const ANavigationNode* Node : PatrolNodes)
@@ -76,14 +83,12 @@ void AEnemyCharacter::BeginPlay()
 			PatrolRoute.Add(Node->GetActorLocation());
 		}
 	}
-	
-	if (AIPerceptionComponent)
-	{
-		AIPerceptionComponent->OnTargetPerceptionUpdated.AddDynamic(this, &AEnemyCharacter::OnSensedActor);
-		AIPerceptionComponent->OnTargetPerceptionForgotten.AddDynamic(this, &AEnemyCharacter::OnForgetActor);
-	}
+	AIPerceptionComponent->OnTargetPerceptionUpdated.AddDynamic(this, &AEnemyCharacter::OnSensedActor);
+	AIPerceptionComponent->OnTargetPerceptionForgotten.AddDynamic(this, &AEnemyCharacter::OnForgetActor);
 }
 
+// Patrol: Walks the route until the detection meter rises. A full meter goes to alerted, anything above the suspicious
+// threshold will go to suspicious.
 void AEnemyCharacter::TickPatrol(float DeltaTime)
 {
 	// Full is checked first, so a player at point-blank skips Suspicious.
@@ -112,6 +117,8 @@ void AEnemyCharacter::TickPatrol(float DeltaTime)
 	MoveAlongPath(DeltaTime);
 }
 
+// Follows the patrol route back and forth. Waits at each end, turns on the spot, the continues to walk to the next
+// waypoint using A*.
 void AEnemyCharacter::TickPatrolRoute(float DeltaTime)
 {
 	// Waiting at an end point: stand still. This is the window for the player to get close.
@@ -148,7 +155,7 @@ void AEnemyCharacter::TickPatrolRoute(float DeltaTime)
 		
 		const FVector ToNext = CurrentPath[0] - GetActorLocation();
 		if (ToNext.SizeSquared2D() > FMath::Square(PathingLocationThreshold)
-			&& FVector::DotProduct(GetActorForwardVector(), ToNext.GetSafeNormal2D()) < 0.95f)
+			&& FVector::DotProduct(GetActorForwardVector(), ToNext.GetSafeNormal2D()) < FacingDotThreshold)
 		{
 			return;
 		}
@@ -165,6 +172,7 @@ void AEnemyCharacter::TickPatrolRoute(float DeltaTime)
 	}
 }
 
+// Picks the next waypoint, reversing the direction at either end of the route.
 void AEnemyCharacter::OnReachedWaypoint()
 {
 	const int32 LastIndex = PatrolRoute.Num() - 1;
@@ -185,6 +193,7 @@ void AEnemyCharacter::OnReachedWaypoint()
 	}
 }
 
+// Replaces the patrol route and restarts it from the first waypoint.
 void AEnemyCharacter::SetPatrolRoute(const TArray<FVector>& NewRoute)
 {
 	PatrolRoute = NewRoute;
@@ -196,10 +205,10 @@ void AEnemyCharacter::SetPatrolRoute(const TArray<FVector>& NewRoute)
 	CurrentPath.Empty();
 }
 
+// Suspicious: stands still and looks at the player, then at the last seen spot. A full meter goes to
+// Alerted, and SuspiciousDuration seconds without sight goes to Search.
 void AEnemyCharacter::TickSuspicious(float DeltaTime)
 {
-	if (!DetectionComponent) return;
-	
 	if (DetectionComponent->IsMeterFull())
 	{
 		SetState(EEnemyState::Alerted);
@@ -207,7 +216,7 @@ void AEnemyCharacter::TickSuspicious(float DeltaTime)
 	}
 	
 	// Still looking at the player resets the timer. Only time spent without sight counts.
-	if (bPlayerVisible)
+	if (CanSeePlayer())
 	{
 		SuspiciousTimer = 0.0f;
 	}
@@ -216,27 +225,24 @@ void AEnemyCharacter::TickSuspicious(float DeltaTime)
 		SuspiciousTimer += DeltaTime;
 	}
 	
-	// "Did I see that?" - no sight for long enough, so go and check the last known position.
+	// No sight for long enough, so go and check the last known position.
 	if (SuspiciousTimer >= SuspiciousDuration)
 	{
 		SetState(EEnemyState::Search);
 		return;
 	}
 	
-	if (bPlayerVisible && SensedPlayer)
-	{
-		FaceLocation(SensedPlayer->GetActorLocation(), DeltaTime, TrackTurnSpeed);
-	}
-	else if (DetectionComponent->HasLastKnownLocation())
-	{
-		FaceLocation(DetectionComponent->GetLastKnownLocation(), DeltaTime, TrackTurnSpeed);
-	}
+	TrackPlayer(DeltaTime);
 }
 
+// Alerted: chases the player, stopping to shoot inside the EngageRange. Goes to search after LoseTargetDuration without
+// sight.
 void AEnemyCharacter::TickAlerted(float DeltaTime)
 {
+	const bool bCanSeePlayer = CanSeePlayer();
+	
 	// Count how long the player has been out of sight. Seeing them again resets it.
-	if (bPlayerVisible)
+	if (bCanSeePlayer)
 	{
 		LostSightTimer = 0.0f;
 	}
@@ -250,8 +256,6 @@ void AEnemyCharacter::TickAlerted(float DeltaTime)
 		SetState(EEnemyState::Search);
 		return;
 	}
-	
-	const bool bCanSeePlayer = bPlayerVisible && SensedPlayer;
 	
 	// Stand and shoot once the player is inside EngageRange. Chasing only resumes beyond the larger
 	// ResumeChaseRange, so the guard does not stutter at the edge. Out of sight, always chase.
@@ -282,7 +286,7 @@ void AEnemyCharacter::TickAlerted(float DeltaTime)
 		
 		// While the player is in sight, rebuild the path on an interval so the guard follows them. Out of
 		// sight, build it once to the last known position, and stop rebuilding once the guard is there.
-		if (DetectionComponent && DetectionComponent->HasLastKnownLocation() && RepathTimer <= 0.0f)
+		if (DetectionComponent->HasLastKnownLocation() && RepathTimer <= 0.0f)
 		{
 			const FVector Destination = DetectionComponent->GetLastKnownLocation();
 			const bool bFarFromDestination = FVector::DistSquared2D(GetActorLocation(), Destination)
@@ -298,16 +302,8 @@ void AEnemyCharacter::TickAlerted(float DeltaTime)
 		MoveAlongPath(DeltaTime, false);
 	}
 	
-	// The guard never turns to face its path while chasing. It looks at the player while they are in
-	// sight, and at the spot where they were last seen once they are not.
-	if (bCanSeePlayer)
-	{
-		FaceLocation(SensedPlayer->GetActorLocation(), DeltaTime, TrackTurnSpeed);
-	}
-	else if (DetectionComponent && DetectionComponent->HasLastKnownLocation())
-	{
-		FaceLocation(DetectionComponent->GetLastKnownLocation(), DeltaTime, TrackTurnSpeed);
-	}
+	// The guard never turns to face its path while chasing.
+	TrackPlayer(DeltaTime);
 	
 	// Shoot whenever the player is in sight, whether running or standing.
 	if (bCanSeePlayer)
@@ -323,6 +319,9 @@ void AEnemyCharacter::TickAlerted(float DeltaTime)
 	}
 }
 
+// Search: walks to the node nearest to the last known position, looks down every direction it connects to, then waits 
+// before giving up. If the player is seen again, it goes to suspicious. Searchduration is used as a failsafe for 
+// in case of infinite searching.
 void AEnemyCharacter::TickSearch(float DeltaTime)
 {
 	if (DetectionComponent->IsMeterFull())
@@ -332,7 +331,7 @@ void AEnemyCharacter::TickSearch(float DeltaTime)
 	}
 	
 	// Seeing the player again: stop and look (Suspicious), then re-search if they are lost.
-	if (bPlayerVisible)
+	if (CanSeePlayer())
 	{
 		SetState(EEnemyState::Suspicious);
 		return;
@@ -393,7 +392,7 @@ void AEnemyCharacter::TickSearch(float DeltaTime)
 			const float YawError = FMath::Abs(FMath::FindDeltaAngleDegrees(
 				GetActorRotation().Yaw, (LookTarget - GetActorLocation()).Rotation().Yaw));
 			
-			if (YawError < 2.0f)
+			if (YawError < FacingToleranceDegrees)
 			{
 				SearchPauseTimer += DeltaTime;
 				if (SearchPauseTimer >= SearchLookPauseDuration)
@@ -425,6 +424,7 @@ void AEnemyCharacter::TickSearch(float DeltaTime)
 	
 }
 
+// Ends the search, resets the meter, and returns to patrol.
 void AEnemyCharacter::EndSearch()
 {
 	// Lower the floor first, otherwise it would pull the reset meter straight back up.
@@ -433,6 +433,7 @@ void AEnemyCharacter::EndSearch()
 	SetState(EEnemyState::Patrol);
 }
 
+// Sorts the connected node positions clockwise by direction from the search node, so the guard sweeps around smoothly.
 void AEnemyCharacter::BuildSearchLookTargets(const FVector& NodeLocation, const TArray<FVector>& ConnectedLocations)
 {
 	SearchLookTargets = ConnectedLocations;
@@ -446,6 +447,7 @@ void AEnemyCharacter::BuildSearchLookTargets(const FVector& NodeLocation, const 
 	});
 }
 
+// Stops the guard from moving, ragdolls, removes body after DeathLifeSpan seconds.
 void AEnemyCharacter::Die()
 {
 	// Stop all movement, and stop the capsule blocking the player and other guards.
@@ -462,6 +464,7 @@ void AEnemyCharacter::Die()
 	SetLifeSpan(DeathLifeSpan);
 }
 
+// Moves toward the first point of CurrentPath and removes it once reached.
 void AEnemyCharacter::MoveAlongPath(float DeltaTime, bool bFaceMovement)
 {
 	if (CurrentPath.IsEmpty()) return;
@@ -482,6 +485,7 @@ void AEnemyCharacter::MoveAlongPath(float DeltaTime, bool bFaceMovement)
 	}
 }
 
+// Builds an A* path to a destination using the pathfinding subsystem, dropping leading points that are behind the guard.
 TArray<FVector> AEnemyCharacter::BuildPath(const FVector& Destination)
 {
 	if (!PathfindingSubsystem) return TArray<FVector>();
@@ -499,8 +503,10 @@ TArray<FVector> AEnemyCharacter::BuildPath(const FVector& Destination)
 	return Path;
 }
 
+// Perception callback: records whether the player is in sight. Fires when sight is gained and when it is lost.
 void AEnemyCharacter::OnSensedActor(AActor* Actor, FAIStimulus Stimulus)
 {
+	// A dead guard senses nothing.
 	if (CurrentState == EEnemyState::Death) return;
 	
 	if (APlayerCharacter* Player = Cast<APlayerCharacter>(Actor))
@@ -511,26 +517,21 @@ void AEnemyCharacter::OnSensedActor(AActor* Actor, FAIStimulus Stimulus)
 		if (bPlayerVisible)
 		{
 			SensedPlayer = Player;
-			UE_LOG(LogTemp, Display, TEXT("Sensed Player"))
 		}
 	}
 }
 
+// Perception callback: the player has been out of sight for the max age, so forget them.
 void AEnemyCharacter::OnForgetActor(AActor* Actor)
 {
-	if (!SensedPlayer) return;
+	// The perception system has forgotten the player, so drop the reference.
+	if (!SensedPlayer || Actor != SensedPlayer) return;
 	
-	if (APlayerCharacter* Player =  Cast<APlayerCharacter>(Actor))
-	{
-		if (Player==SensedPlayer)
-		{
-			UE_LOG(LogTemp, Display, TEXT("Lost Player"))
-			SensedPlayer = nullptr;
-			bPlayerVisible = false;
-		}
-	}
+	SensedPlayer = nullptr;
+	bPlayerVisible = false;
 }
 
+// True if the guard is armed and its magazine is empty.
 bool AEnemyCharacter::OutOfAmmo()
 {
 	if (!HasWeapon()) return false;
@@ -538,6 +539,7 @@ bool AEnemyCharacter::OutOfAmmo()
 	return true;
 }
 
+// Debug: draws the sight cone, coloured green to yellow to red by the detection meter.
 void AEnemyCharacter::DrawSightCone() const
 {
 #if ENABLE_DRAW_DEBUG
@@ -563,6 +565,7 @@ void AEnemyCharacter::DrawSightCone() const
 #endif
 }
 
+// Debug: draws the state and meter above the guard, and a sphere at the last known player position.
 void AEnemyCharacter::DrawDebugInfo() const
 {
 #if ENABLE_DRAW_DEBUG
@@ -573,15 +576,16 @@ void AEnemyCharacter::DrawDebugInfo() const
 
 	// Passing 'this' makes the offset relative to the guard, so the text follows it.
 	// Duration 0 draws for one frame, since this is redrawn every tick.
-	DrawDebugString(GetWorld(), FVector(0.0f, 0.0f, 120.0f), StateText, const_cast<AEnemyCharacter*>(this), FColor::White, 0.0f, true);
+	DrawDebugString(GetWorld(), FVector(0.0f, 0.0f, DebugTextHeight), StateText, const_cast<AEnemyCharacter*>(this), FColor::White, 0.0f, true);
 
 	if (DetectionComponent->HasLastKnownLocation() && CurrentState != EEnemyState::Death)
 	{
-		DrawDebugSphere(GetWorld(), DetectionComponent->GetLastKnownLocation(), 50.0f, 8, FColor::Cyan, false, -1.0f, 0, 1.0f);
+		DrawDebugSphere(GetWorld(), DetectionComponent->GetLastKnownLocation(), DebugSphereRadius, 8, FColor::Cyan, false, -1.0f, 0, 1.0f);
 	}
 #endif
 }
 
+// Sets the walk speed for a state. Suspicious and Death use 0, so the guard stands still.
 void AEnemyCharacter::ApplyStateSpeed(EEnemyState State)
 {
 	float Speed = 0.0f;
@@ -608,12 +612,10 @@ void AEnemyCharacter::ApplyStateSpeed(EEnemyState State)
 		break;
 	}
 	
-	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
-	{
-		GetCharacterMovement()->MaxWalkSpeed = Speed;
-	}
+	GetCharacterMovement()->MaxWalkSpeed = Speed;
 }
 
+// Turns the guard on the spot toward a location, limited to Speed degrees per second.
 void AEnemyCharacter::FaceLocation(const FVector& Location, float DeltaTime, float Speed)
 {
 	FVector ToTarget = Location - GetActorLocation();
@@ -628,6 +630,7 @@ void AEnemyCharacter::FaceLocation(const FVector& Location, float DeltaTime, flo
 	SetActorRotation(FRotator(0.0f, NewYaw, 0.0f));
 }
 
+// Setter for states
 void AEnemyCharacter::SetState(EEnemyState NewState)
 {
 	if (NewState == CurrentState) return;
@@ -639,6 +642,7 @@ void AEnemyCharacter::SetState(EEnemyState NewState)
 	EnterState(NewState);
 }
 
+// One-off setup when a state begins. Clears path, sets speed and meter floor, and starts timers.
 void AEnemyCharacter::EnterState(EEnemyState NewState)
 {
 	// A path made for the previous state is never valid for the new one.
@@ -703,17 +707,36 @@ void AEnemyCharacter::EnterState(EEnemyState NewState)
 	}
 }
 
+// True when the perception system sees the player in sight
+bool AEnemyCharacter::CanSeePlayer() const
+{
+	return bPlayerVisible && SensedPlayer != nullptr;
+}
+
+// Faces the player when spotted in sight
+void AEnemyCharacter::TrackPlayer(float DeltaTime)
+{
+	if (CanSeePlayer())
+	{
+		FaceLocation(SensedPlayer->GetActorLocation(), DeltaTime, TrackTurnSpeed);
+	}
+	else if (DetectionComponent->HasLastKnownLocation())
+	{
+		FaceLocation(DetectionComponent->GetLastKnownLocation(), DeltaTime, TrackTurnSpeed);
+	}
+}
+
+// Increases detection meter when player is in sight. Called once per tick.
 void AEnemyCharacter::UpdateDetection(float DeltaTime)
 {
-	if (!DetectionComponent) return;
-	
-	const bool bCanSee = bPlayerVisible && SensedPlayer;
+	const bool bCanSee = CanSeePlayer();
 	const FVector PlayerLocation = bCanSee ? SensedPlayer->GetActorLocation() : FVector::ZeroVector;
 	const float Distance = bCanSee ? FVector::Dist(GetActorLocation(), PlayerLocation) : 0.0f;
 	
 	DetectionComponent->UpdateDetection(DeltaTime, bCanSee, PlayerLocation, Distance);
 }
 
+// Damage handler for guard. Take reduced damage if in alerted, otherwise take all of it.
 float AEnemyCharacter::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
 	// Only an Alerted guard is protected. Patrol, Suspicious and Search guards take full damage.

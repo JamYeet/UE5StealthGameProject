@@ -130,6 +130,8 @@ TArray<FVector> UPathfindingSubsystem::GetWaypointPositions()
 
 }
 
+// Finds the node nearest a location and returns its position and the positions of the nodes it connects to.
+// Search uses this to decide where to stand and which directions to look.
 bool UPathfindingSubsystem::GetNearestNodeInfo(const FVector& Location, FVector& OutNodeLocation,
 	TArray<FVector>& OutConnectedLocations)
 {

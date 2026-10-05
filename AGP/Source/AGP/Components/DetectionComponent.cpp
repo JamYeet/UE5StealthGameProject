@@ -8,7 +8,7 @@ UDetectionComponent::UDetectionComponent()
 	// The owning guard drives this component, so it does not need its own tick.
 	PrimaryComponentTick.bCanEverTick = false;
 }
-
+// Advances the meter, faster when closer, otherwise decays after a short delay.
 void UDetectionComponent::UpdateDetection(float DeltaTime, bool bCanSeeTarget, const FVector& TargetLocation, float DistanceToTarget)
 {
 	if (bCanSeeTarget)
@@ -36,43 +36,51 @@ void UDetectionComponent::UpdateDetection(float DeltaTime, bool bCanSeeTarget, c
 	Meter = FMath::Clamp(Meter, MeterFloor, 1.0f);
 }
 
+// Sets the meter back to 0. Have to lower the floor first, or the floor will pull it back up.
 void UDetectionComponent::ResetMeter()
 {
 	Meter = 0.0f;
 	TimeSinceSeen = 0.0f;
 }
 
+// Sets the lowest value the meter can fall to, and lifts the meter if it is below the new floor.
 void UDetectionComponent::SetMeterFloor(float NewFloor)
 {
 	MeterFloor = FMath::Clamp(NewFloor, 0.0f, 1.0f);
 	Meter = FMath::Max(Meter, MeterFloor);
 }
 
+// Current detection level, 0 to 1.
 float UDetectionComponent::GetMeter() const
 {
 	return Meter;
 }
 
+// Meter value above which a guard becomes Suspicious.
 float UDetectionComponent::GetSuspiciousThreshold() const
 {
 	return SuspiciousThreshold;
 }
 
+// True when meter is 1.
 bool UDetectionComponent::IsMeterFull() const
 {
 	return Meter >= 1.0f;
 }
 
+// True when the meter is above the suspicious threshold.
 bool UDetectionComponent::IsAboveSuspiciousThreshold() const
 {
 	return Meter > SuspiciousThreshold;
 }
 
+// True once the target has been seen at least once.
 bool UDetectionComponent::HasLastKnownLocation() const
 {
 	return bHasLastKnownLocation;
 }
 
+// Where the target was when it was last in sight.
 FVector UDetectionComponent::GetLastKnownLocation() const
 {
 	return LastKnownLocation;

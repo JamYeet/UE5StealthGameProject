@@ -82,6 +82,7 @@ void APlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 	}
 }
 
+// Melee attack: sweeps a small sphere from the camera along the look direction and damages the first character hit.
 void APlayerCharacter::Melee(const FInputActionValue& Value)
 {
 	// Respect the cooldown between swings.
@@ -103,7 +104,7 @@ void APlayerCharacter::Melee(const FInputActionValue& Value)
 	QueryParams.AddIgnoredActor(this);
 	
 	if (GetWorld()->SweepSingleByChannel(HitResult, CameraPosition, SweepEnd, FQuat::Identity,
-		ECC_Pawn, FCollisionShape::MakeSphere(25.0f), QueryParams))
+	ECC_Pawn, FCollisionShape::MakeSphere(MeleeRadius), QueryParams))
 	{
 		// The target decides what the damage does, so a guard can take less when it is Alerted.
 		if (ABaseCharacter* Target = Cast<ABaseCharacter>(HitResult.GetActor()))

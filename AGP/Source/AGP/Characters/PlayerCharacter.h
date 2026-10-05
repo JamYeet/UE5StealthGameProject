@@ -51,6 +51,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Melee")
 	float MeleeRange = 85.0f;
 	
+	// Radius in cm of the sphere swept along the melee reach, so the swing forgives a slightly off aim.
+	UPROPERTY(EditDefaultsOnly, Category = "Melee")
+	float MeleeRadius = 25.0f;
+	
 	// Damage dealt by one melee hit.
 	UPROPERTY(EditDefaultsOnly, Category = "Melee")
 	float MeleeDamage = 100.0f;
